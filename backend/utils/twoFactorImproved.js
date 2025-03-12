@@ -1,233 +1,166 @@
-// IMPROVED TOTP IMPLEMENTATION WITH FALLBACKS
 const crypto = require("crypto");
 const qrcode = require("qrcode");
+const base32 = require("hi-base32");
 
-// Try to require otplib, but provide fallback implementation if not available
-let authenticator;
-try {
-  const otplib = require("otplib");
-  authenticator = otplib.authenticator;
+// Improved TOTP implementation with RFC 6238 compliance
+class TOTPUtil {
+  /**
+   * Generate a secure TOTP secret
+   * @param {string} email - User email for labeling the auth URL
+   * @param {string} issuer - Service name
+   * @returns {object} Secret and otpauth URL
+   */
+  generateSecret(email, issuer = "AuthApp") {
+    // Generate secure random bytes for the secret
+    const secretBytes = crypto.randomBytes(20);
+    const secret = base32.encode(secretBytes).replace(/=/g, "");
 
-  // Configure authenticator with settings compatible with Authy
-  authenticator.options = {
-    window: 2, // Increase window to account for time skew (2 steps before and after)
-    digits: 6, // 6 digit code
-    algorithm: "sha1", // SHA1 algorithm
-    step: 30, // 30-second window
-  };
-  console.log("Using otplib for TOTP implementation");
-} catch (error) {
-  console.log("otplib not found, using fallback TOTP implementation");
-  authenticator = null;
-}
-
-// Generate a secret key for TOTP
-const generateSecret = (email) => {
-  if (authenticator) {
-    // Use otplib if available
-    const secret = authenticator.generateSecret();
-    const otpauth_url = authenticator.keyuri(
-      email,
-      "SecureAuth", // This will appear in the authenticator app
-      secret
-    );
-    return { secret, otpauth_url };
-  } else {
-    // Fallback implementation
-    const buffer = crypto.randomBytes(15);
-    const secret = base32Encode(buffer).replace(/=/g, "").substring(0, 24);
+    // Create a URL for the QR code (otpauth://totp/{label}?secret={secret}&issuer={issuer})
+    const label = encodeURIComponent(email);
+    const otpauthUrl = `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent(
+      issuer
+    )}`;
 
     return {
       secret,
-      otpauth_url: `otpauth://totp/${encodeURIComponent(
-        "SecureAuth"
-      )}:${encodeURIComponent(
-        email
-      )}?secret=${secret}&issuer=${encodeURIComponent(
-        "SecureAuth"
-      )}&algorithm=SHA1&digits=6&period=30`,
+      otpauth_url: otpauthUrl,
     };
   }
-};
 
-// Validate a time-based token
-const verifyToken = (token, secret) => {
-  if (!token || !secret) {
-    console.log("Missing token or secret");
-    return false;
+  /**
+   * Generate QR code as base64 string from an otpauth URL
+   * @param {string} otpauthUrl - The otpauth URL
+   * @returns {Promise<string>} Data URL of QR code image
+   */
+  async generateQRCode(otpauthUrl) {
+    try {
+      // Generate QR code as data URL
+      const dataUrl = await qrcode.toDataURL(otpauthUrl, {
+        errorCorrectionLevel: "H",
+        margin: 1,
+        scale: 4,
+        color: {
+          dark: "#000000",
+          light: "#ffffff",
+        },
+      });
+
+      return dataUrl; // Return the full data URL
+    } catch (error) {
+      console.error("QR code generation error:", error);
+      throw new Error("Failed to generate QR code");
+    }
   }
 
-  // Clean the token and secret
-  token = token.toString().replace(/\s+/g, "");
-  const cleanSecret = secret.trim().replace(/\s+/g, "").toUpperCase();
-
-  if (!/^\d{6}$/.test(token)) {
-    console.log("Invalid token format, must be 6 digits");
-    return false;
-  }
-
-  try {
-    console.log(`Verifying token ${token} with secret ${cleanSecret}`);
-
-    if (authenticator) {
-      // Try with otplib if available
-      try {
-        const isValid = authenticator.verify({ token, secret: cleanSecret });
-        console.log(`otplib verification result: ${isValid}`);
-        return isValid;
-      } catch (e) {
-        console.log(`otplib verification failed: ${e.message}`);
-      }
+  /**
+   * Verify a TOTP token
+   * @param {string} token - Token to verify
+   * @param {string} secret - User's TOTP secret
+   * @param {number} window - Time window for valid codes (before and after current time)
+   * @returns {boolean} Whether the token is valid
+   */
+  verifyToken(token, secret, window = 1) {
+    if (!token || !secret) {
+      return false;
     }
 
-    // Fallback to manual TOTP implementation
-    return manualVerifyToken(token, cleanSecret);
-  } catch (error) {
-    console.error("Error verifying token:", error);
-    return false;
-  }
-};
+    // Clean the input
+    token = token.replace(/\s/g, "");
 
-// Manual TOTP verification with wider time windows for better compatibility
-const manualVerifyToken = (token, secret) => {
-  try {
-    // Decode base32 secret to buffer
-    const secretBuffer = base32Decode(secret);
+    // Ensure token is a 6-digit number
+    if (!/^\d{6}$/.test(token)) {
+      return false;
+    }
 
-    // Get current time in seconds
+    // Current time step (30-second window)
     const now = Math.floor(Date.now() / 1000);
+    const timeStep = 30;
+    const currentTimeSlice = Math.floor(now / timeStep);
 
-    // Try multiple time windows (wider range for compatibility)
-    // Checking -2, -1, 0, +1, +2 windows (30 seconds each)
-    for (let i = -2; i <= 2; i++) {
-      const time = Math.floor((now + i * 30) / 30);
-      const calculatedToken = calculateTOTP(secretBuffer, time);
+    // Check current and adjacent time steps within the window
+    for (let i = -window; i <= window; i++) {
+      const timeSlice = currentTimeSlice + i;
+      const calculatedToken = this.generateToken(secret, timeSlice);
 
-      console.log(
-        `Manual comparison: Input ${token} vs Generated ${calculatedToken} for window offset ${i}`
-      );
-
-      if (token === calculatedToken) {
-        console.log(`Manual verification successful with offset ${i}`);
+      if (calculatedToken === token) {
         return true;
       }
     }
 
     return false;
-  } catch (error) {
-    console.error("Manual verification error:", error);
-    return false;
-  }
-};
-
-// Calculate TOTP token
-const calculateTOTP = (secretBuffer, timeCounter) => {
-  // Convert counter to buffer
-  const counterBuffer = Buffer.alloc(8);
-  for (let i = 0; i < 8; i++) {
-    counterBuffer[7 - i] = (timeCounter >>> (i * 8)) & 0xff;
   }
 
-  // Calculate HMAC-SHA1
-  const hmac = crypto.createHmac("sha1", secretBuffer);
-  hmac.update(counterBuffer);
-  const digest = hmac.digest();
-
-  // Get offset based on last nibble
-  const offset = digest[digest.length - 1] & 0x0f;
-
-  // Get 4 bytes starting at offset
-  const binary =
-    ((digest[offset] & 0x7f) << 24) |
-    ((digest[offset + 1] & 0xff) << 16) |
-    ((digest[offset + 2] & 0xff) << 8) |
-    (digest[offset + 3] & 0xff);
-
-  // Calculate 6-digit code
-  const token = binary % 1000000;
-
-  // Pad with leading zeros if necessary
-  return token.toString().padStart(6, "0");
-};
-
-// Generate QR code for authenticator app
-const generateQRCode = async (otpauthUrl) => {
-  try {
-    return await qrcode.toDataURL(otpauthUrl);
-  } catch (err) {
-    console.error("Error generating QR code:", err);
-    throw new Error("Error generating QR code");
-  }
-};
-
-// Base32 Encoding function (fallback)
-function base32Encode(buffer) {
-  const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  let result = "";
-  let bits = 0;
-  let value = 0;
-
-  for (let i = 0; i < buffer.length; i++) {
-    value = (value << 8) | buffer[i];
-    bits += 8;
-
-    while (bits >= 5) {
-      bits -= 5;
-      result += ALPHABET[(value >>> bits) & 31];
+  /**
+   * Generate a TOTP token for a specific time
+   * @param {string} secret - The TOTP secret
+   * @param {number} timeSlice - Time slice to use
+   * @returns {string} Generated 6-digit token
+   */
+  generateToken(secret, timeSlice) {
+    // Decode the base32 secret
+    let buffer;
+    try {
+      // Handle padding
+      let secretWithPadding = secret;
+      if (secretWithPadding.length % 8 !== 0) {
+        secretWithPadding += "=".repeat(8 - (secretWithPadding.length % 8));
+      }
+      buffer = Buffer.from(base32.decode.asBytes(secretWithPadding));
+    } catch (error) {
+      console.error("Secret decoding error:", error);
+      return null;
     }
+
+    // Convert time to buffer (8 bytes, big endian)
+    const timeBuffer = Buffer.alloc(8);
+    const timeStep = 30;
+    const time = timeSlice * timeStep;
+
+    // Fill the buffer with the time value (as a 64-bit big-endian integer)
+    timeBuffer.writeBigUInt64BE(BigInt(time), 0);
+
+    // Generate HMAC using SHA1 (as per RFC 6238)
+    const hmac = crypto.createHmac("sha1", buffer);
+    hmac.update(timeBuffer);
+    const hmacResult = hmac.digest();
+
+    // Dynamic truncation
+    const offset = hmacResult[hmacResult.length - 1] & 0xf;
+
+    // Extract 4 bytes from the result starting at the offset
+    const binary =
+      ((hmacResult[offset] & 0x7f) << 24) |
+      ((hmacResult[offset + 1] & 0xff) << 16) |
+      ((hmacResult[offset + 2] & 0xff) << 8) |
+      (hmacResult[offset + 3] & 0xff);
+
+    // Generate 6-digit code
+    const token = binary % 1000000;
+    return token.toString().padStart(6, "0");
   }
 
-  if (bits > 0) {
-    result += ALPHABET[(value << (5 - bits)) & 31];
+  /**
+   * Generate a set of recovery codes
+   * @param {number} count - Number of recovery codes to generate
+   * @returns {Array<string>} Array of recovery codes
+   */
+  generateRecoveryCodes(count = 10) {
+    const codes = [];
+    for (let i = 0; i < count; i++) {
+      // Generate a secure random 8-byte value
+      const randomBytes = crypto.randomBytes(8);
+      // Convert to a 16-character hex string
+      const code = randomBytes.toString("hex").toUpperCase();
+      // Format as xxxx-xxxx-xxxx-xxxx for readability
+      codes.push(
+        `${code.slice(0, 4)}-${code.slice(4, 8)}-${code.slice(
+          8,
+          12
+        )}-${code.slice(12, 16)}`
+      );
+    }
+    return codes;
   }
-
-  // Add padding
-  while (result.length % 8 !== 0) {
-    result += "=";
-  }
-
-  return result;
 }
 
-// Base32 Decoding function (fallback)
-function base32Decode(base32String) {
-  // Base32 character set
-  const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  const CHAR_MAP = {};
-  for (let i = 0; i < ALPHABET.length; i++) {
-    CHAR_MAP[ALPHABET[i]] = i;
-  }
-
-  // Remove padding and normalize case
-  base32String = base32String.toUpperCase().replace(/=+$/, "");
-
-  let bits = 0;
-  let value = 0;
-  let index = 0;
-  const output = new Uint8Array(Math.ceil((base32String.length * 5) / 8));
-
-  for (let i = 0; i < base32String.length; i++) {
-    const char = base32String[i];
-    const charValue = CHAR_MAP[char];
-
-    if (charValue === undefined) {
-      throw new Error(`Invalid character in base32 string: ${char}`);
-    }
-
-    value = (value << 5) | charValue;
-    bits += 5;
-
-    if (bits >= 8) {
-      output[index++] = (value >>> (bits - 8)) & 0xff;
-      bits -= 8;
-    }
-  }
-
-  return Buffer.from(output.buffer.slice(0, index));
-}
-
-module.exports = {
-  generateSecret,
-  verifyToken,
-  generateQRCode,
-};
+module.exports = new TOTPUtil();

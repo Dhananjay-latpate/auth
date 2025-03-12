@@ -46,6 +46,8 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [requiresTwoFactor, setRequiresTwoFactor] = useState(false);
+  const [twoFactorEmail, setTwoFactorEmail] = useState("");
 
   const router = useRouter();
 
@@ -167,6 +169,8 @@ export const AuthProvider = ({ children }) => {
         else if (status === 400) {
           errorMessage =
             "Invalid input. Please check your information and try again.";
+        } else if (status === 429) {
+          errorMessage = "Too many attempts. Please try again later.";
         } else if (status === 500) {
           errorMessage = "Server error. Please try again later.";
         }
@@ -196,17 +200,99 @@ export const AuthProvider = ({ children }) => {
         { email, password }
       );
 
-      if (res.data.success && res.data.token) {
+      if (res.data.success) {
+        // Check if two-factor auth is required
+        if (res.data.requireTwoFactor) {
+          console.log("[Auth] 2FA required for login");
+          setRequiresTwoFactor(true);
+          setTwoFactorEmail(res.data.email);
+          return { requireTwoFactor: true, email: res.data.email };
+        }
+
         console.log("[Auth] Login successful, setting token");
         storeAuthToken(res.data.token);
-
         // Use very explicit no_redirect to bypass all checks
         window.location.replace("/dashboard?no_redirect=true");
         return res.data;
       }
       return null;
     } catch (error) {
-      handleError(error);
+      console.error("Login error:", error);
+      let errorMessage = "Login failed. Please check your credentials.";
+
+      if (error.response) {
+        // Handle rate limiting
+        if (error.response.status === 429) {
+          errorMessage = "Too many login attempts. Please try again later.";
+        } else if (error.response.data?.error) {
+          errorMessage = error.response.data.error;
+        }
+      }
+
+      setError(errorMessage);
+      setTimeout(() => setError(null), 5000);
+      throw error;
+    }
+  };
+
+  // Verify two-factor authentication
+  const verifyTwoFactor = async (token) => {
+    try {
+      if (!twoFactorEmail) {
+        throw new Error("No email provided for 2FA verification");
+      }
+
+      const res = await axios.post(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/2fa/verify`,
+        { email: twoFactorEmail, token }
+      );
+
+      if (res.data.success) {
+        // Reset 2FA state
+        setRequiresTwoFactor(false);
+        setTwoFactorEmail("");
+
+        // Store token and redirect
+        storeAuthToken(res.data.token);
+        window.location.replace("/dashboard?no_redirect=true");
+        return res.data;
+      }
+      return null;
+    } catch (error) {
+      console.error("2FA verification error:", error);
+      setError(error.response?.data?.error || "Invalid verification code");
+      setTimeout(() => setError(null), 5000);
+      throw error;
+    }
+  };
+
+  // Verify recovery code for 2FA
+  const verifyRecoveryCode = async (recoveryCode) => {
+    try {
+      if (!twoFactorEmail) {
+        throw new Error("No email provided for recovery code verification");
+      }
+
+      const res = await axios.post(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/2fa/verify-recovery`,
+        { email: twoFactorEmail, recoveryCode }
+      );
+
+      if (res.data.success) {
+        // Reset 2FA state
+        setRequiresTwoFactor(false);
+        setTwoFactorEmail("");
+
+        // Store token and redirect
+        storeAuthToken(res.data.token);
+        window.location.replace("/dashboard?no_redirect=true");
+        return res.data;
+      }
+      return null;
+    } catch (error) {
+      console.error("Recovery code verification error:", error);
+      setError(error.response?.data?.error || "Invalid recovery code");
+      setTimeout(() => setError(null), 5000);
       throw error;
     }
   };
@@ -229,7 +315,7 @@ export const AuthProvider = ({ children }) => {
         );
       }
     } catch (error) {
-      handleError(error);
+      console.error("Logout error:", error);
     } finally {
       window.location.replace("/login?logged_out=true");
     }
@@ -315,6 +401,153 @@ export const AuthProvider = ({ children }) => {
     return authPromiseRef.current;
   };
 
+  // Setup Two-Factor Authentication
+  const setup2FA = async () => {
+    try {
+      const res = await axios.post(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/2fa/setup`
+      );
+
+      return res.data;
+    } catch (error) {
+      console.error("2FA setup error:", error);
+      setError(error.response?.data?.error || "Failed to setup 2FA");
+      setTimeout(() => setError(null), 5000);
+      throw error;
+    }
+  };
+
+  // Enable Two-Factor Authentication
+  const enable2FA = async (token) => {
+    try {
+      const res = await axios.post(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/2fa/enable`,
+        { token }
+      );
+
+      // Refresh user data to reflect 2FA status
+      await checkUserLoggedIn();
+      return res.data;
+    } catch (error) {
+      console.error("Enable 2FA error:", error);
+      setError(error.response?.data?.error || "Failed to enable 2FA");
+      setTimeout(() => setError(null), 5000);
+      throw error;
+    }
+  };
+
+  // Disable Two-Factor Authentication
+  const disable2FA = async (token) => {
+    try {
+      const res = await axios.post(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/2fa/disable`,
+        { token }
+      );
+
+      // Refresh user data to reflect 2FA status
+      await checkUserLoggedIn();
+      return res.data;
+    } catch (error) {
+      console.error("Disable 2FA error:", error);
+      setError(error.response?.data?.error || "Failed to disable 2FA");
+      setTimeout(() => setError(null), 5000);
+      throw error;
+    }
+  };
+
+  // Generate recovery codes for 2FA
+  const generateRecoveryCodes = async () => {
+    try {
+      const res = await axios.get(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/2fa/recovery-codes`
+      );
+      return res.data;
+    } catch (error) {
+      console.error("Generate recovery codes error:", error);
+      setError(
+        error.response?.data?.error || "Failed to generate recovery codes"
+      );
+      setTimeout(() => setError(null), 5000);
+      throw error;
+    }
+  };
+
+  // Request password reset
+  const forgotPassword = async (email) => {
+    try {
+      const res = await axios.post(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/forgotpassword`,
+        { email }
+      );
+      return res.data;
+    } catch (error) {
+      console.error("Forgot password error:", error);
+      // Always return a consistent message to prevent user enumeration
+      const message =
+        error.response?.status === 429
+          ? "Too many reset attempts. Please try again later."
+          : "If a user with that email exists, a reset link has been sent.";
+
+      setError(message);
+      setTimeout(() => setError(null), 5000);
+      return { success: false, message };
+    }
+  };
+
+  // Reset password using token
+  const resetPassword = async (token, password, confirmPassword) => {
+    try {
+      const res = await axios.put(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/resetpassword/${token}`,
+        { password, confirmPassword }
+      );
+
+      if (res.data.success) {
+        return res.data;
+      }
+    } catch (error) {
+      console.error("Reset password error:", error);
+      setError(
+        error.response?.data?.error ||
+          "Failed to reset password. Please try again."
+      );
+      setTimeout(() => setError(null), 5000);
+      throw error;
+    }
+  };
+
+  // Verify reset password token
+  const verifyResetToken = async (token) => {
+    try {
+      const res = await axios.get(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/verifytoken/${token}`
+      );
+      return res.data;
+    } catch (error) {
+      console.error("Verify token error:", error);
+      return { success: false, error: "Invalid or expired token" };
+    }
+  };
+
+  // Update password
+  const updatePassword = async (currentPassword, newPassword) => {
+    try {
+      const res = await axios.put(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/updatepassword`,
+        { currentPassword, newPassword }
+      );
+      return res.data;
+    } catch (error) {
+      console.error("Update password error:", error);
+      setError(
+        error.response?.data?.error ||
+          "Failed to update password. Please try again."
+      );
+      setTimeout(() => setError(null), 5000);
+      throw error;
+    }
+  };
+
   // Check if user has specified permission
   const hasPermission = (permission) => {
     if (!user) return false;
@@ -330,11 +563,23 @@ export const AuthProvider = ({ children }) => {
         user,
         loading,
         error,
+        requiresTwoFactor,
+        twoFactorEmail,
         register,
         login,
         logout,
+        verifyTwoFactor,
+        verifyRecoveryCode,
         hasPermission,
         checkUserLoggedIn,
+        setup2FA,
+        enable2FA,
+        disable2FA,
+        generateRecoveryCodes,
+        forgotPassword,
+        resetPassword,
+        verifyResetToken,
+        updatePassword,
       }}
     >
       {children}

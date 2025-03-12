@@ -1,276 +1,162 @@
 import { useState, useEffect } from "react";
-import { useForm } from "react-hook-form";
-import { useAuth } from "../context/AuthContext";
 import Link from "next/link";
-import Head from "next/head";
 import { useRouter } from "next/router";
-import { getCookie, deleteCookie } from "cookies-next";
+import { useAuth } from "../context/AuthContext";
+import Layout from "../components/Layout";
+import TwoFactorAuthentication from "../components/TwoFactorAuthentication";
 
-export default function Login() {
-  const {
-    register,
-    handleSubmit,
-    formState: { errors },
-  } = useForm();
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [successMessage, setSuccessMessage] = useState(null);
+const Login = () => {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [localError, setLocalError] = useState("");
+  const { login, error, requiresTwoFactor } = useAuth();
   const router = useRouter();
-  const { logged_out, callbackUrl } = router.query;
-  const auth = useAuth();
 
-  // This useEffect ensures that previous auth state is properly cleaned up
+  // Clear local error when global error changes
   useEffect(() => {
-    console.log("[Login] Page mounted");
-    console.log("[Login] URL params:", router.query);
-
-    // Handle emergency token clearing
-    if (router.query.clear === "true") {
-      deleteCookie("token", { path: "/" });
-      localStorage.removeItem("auth_token");
-      localStorage.removeItem("user_data");
-      const url = new URL(window.location.href);
-      url.searchParams.delete("clear");
-      url.searchParams.set("bypass", "true");
-      window.history.replaceState({}, document.title, url.toString());
+    if (error) {
+      setLocalError(error);
     }
+  }, [error]);
 
-    // Clear any redirect state to prevent loops
-    localStorage.removeItem("isLoggingOut");
-
-    // Ensure all token checks run properly on mount
-    const handleTokenCleanup = () => {
-      // If logged_out parameter is present, we've just performed a logout
-      if (logged_out === "true") {
-        console.log("Login page - detected logged_out=true, clearing tokens");
-        deleteCookie("token", { path: "/" });
-        localStorage.removeItem("auth_token");
-        localStorage.removeItem("user_data");
-
-        // Show success message
-        setSuccessMessage("You have been successfully logged out.");
-
-        // Clear the query parameter after a delay for cleaner URL
-        setTimeout(() => {
-          const url = new URL(window.location.href);
-          url.searchParams.delete("logged_out");
-          url.searchParams.delete("t");
-          url.searchParams.set("no_redirect", "true"); // Add flag to prevent redirect loops
-          window.history.replaceState({}, document.title, url.toString());
-        }, 500);
-      }
-      // Regular login page visit - check for stale tokens
-      else {
-        // Check for both token sources
-        const cookieToken = getCookie("token");
-        const localToken = localStorage.getItem("auth_token");
-
-        // If coming from direct URL entry with token present, clear tokens
-        const directEntry =
-          !document.referrer ||
-          document.referrer.indexOf(window.location.host) === -1;
-
-        const hasTokenParam = router.query.t;
-
-        if ((cookieToken || localToken) && directEntry && hasTokenParam) {
-          console.log(
-            "Login page visited directly with tokens present, clearing stale tokens"
-          );
-          deleteCookie("token", { path: "/" });
-          localStorage.removeItem("auth_token");
-          localStorage.removeItem("user_data");
-        }
-      }
-    };
-
-    // Run token cleanup when component mounts
-    handleTokenCleanup();
-
-    // Return cleanup function
-    return () => {
-      // No cleanup needed
-    };
-  }, [logged_out, router.query.clear]);
-
+  // Check for logged_out parameter
   useEffect(() => {
-    console.log("[Login] Page mounted");
-    console.log("[Login] URL params:", router.query);
-
-    if (router.query.force_clear === "true") {
-      console.log("[Login] Force clearing auth state");
-      deleteCookie("token", { path: "/" });
-      localStorage.removeItem("auth_token");
-      localStorage.removeItem("user_data");
-
-      // Clean up URL
-      const url = new URL(window.location.href);
-      url.searchParams.delete("force_clear");
-      url.searchParams.set("bypass_auth", "true");
-      console.log("[Login] Updating URL:", url.toString());
-      window.history.replaceState({}, document.title, url.toString());
+    if (router.query.logged_out) {
+      setLocalError("You have been logged out.");
+      setTimeout(() => setLocalError(""), 3000);
     }
-  }, [router.query.force_clear]);
+  }, [router.query]);
 
-  useEffect(() => {
-    // Handle auth reset
-    if (router.query.reset === "true") {
-      console.log("[Login] Resetting auth state");
-      deleteCookie("token", { path: "/" });
-      localStorage.clear();
-
-      // Clean URL
-      const url = new URL(window.location.href);
-      url.searchParams.delete("reset");
-      url.searchParams.set("no_redirect", "true");
-      window.history.replaceState({}, document.title, url.toString());
-    }
-  }, [router.query.reset]);
-
-  useEffect(() => {
-    // Clear any existing auth state on mount
-    document.cookie = "route_history=; max-age=0; path=/;";
-
-    if (router.query.logged_out === "true") {
-      deleteCookie("token");
-      localStorage.clear();
-      const url = new URL(window.location.href);
-      url.searchParams.delete("logged_out");
-      url.searchParams.set("no_redirect", "true");
-      window.history.replaceState({}, document.title, url.toString());
-    }
-  }, []);
-
-  const onSubmit = async (data) => {
-    setIsLoading(true);
-    setError(null);
-    setSuccessMessage(null);
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    setLocalError("");
 
     try {
-      const response = await auth.login(data);
+      const result = await login({ email, password });
 
-      if (response?.success && response?.token && response?.user) {
-        console.log("Login successful, preparing navigation");
-
-        // Add force_dashboard flag to ensure we get to dashboard
-        const dashboardUrl = new URL("/dashboard", window.location.href);
-        dashboardUrl.searchParams.set("force_dashboard", "true");
-
-        // Use window.location.replace for a clean navigation
-        window.location.replace(dashboardUrl.toString());
-        return;
+      // If two-factor auth is required, the component will be shown
+      if (result?.requireTwoFactor) {
+        // Don't reset the form or redirect, the 2FA component will handle that
+        console.log("Two-factor authentication required");
       }
-    } catch (err) {
-      console.error("Login error:", err);
-      setError(err?.response?.data?.error || "Login failed. Please try again.");
+    } catch (error) {
+      console.error("Login error:", error);
+      setLocalError(
+        error.response?.data?.error || "Login failed. Please try again."
+      );
     } finally {
-      setIsLoading(false);
+      setIsSubmitting(false);
     }
   };
 
+  // If two-factor authentication is required, show the 2FA component
+  if (requiresTwoFactor) {
+    return (
+      <Layout requireAuth={false} title="Two-Factor Authentication">
+        <TwoFactorAuthentication />
+      </Layout>
+    );
+  }
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100 py-12 px-4 sm:px-6 lg:px-8">
-      <Head>
-        <title>Login - Secure Auth System</title>
-      </Head>
-
-      <div className="max-w-md w-full bg-white p-8 rounded-lg shadow-md">
-        <h1 className="text-center text-2xl font-bold text-gray-900 mb-6">
-          Login to Your Account
-        </h1>
-
-        {successMessage && (
-          <div className="bg-green-50 border border-green-200 text-green-800 p-4 mb-4 rounded-md">
-            {successMessage}
+    <Layout requireAuth={false} title="Login">
+      <div className="flex min-h-full items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
+        <div className="w-full max-w-md space-y-8">
+          <div>
+            <h2 className="mt-6 text-center text-3xl font-bold tracking-tight text-gray-900">
+              Sign in to your account
+            </h2>
+            <p className="mt-2 text-center text-sm text-gray-600">
+              Or{" "}
+              <Link
+                href="/register"
+                className="font-medium text-indigo-600 hover:text-indigo-500"
+              >
+                create a new account
+              </Link>
+            </p>
           </div>
-        )}
 
-        {error && (
-          <div className="bg-red-50 border border-red-200 text-red-800 p-4 mb-4 rounded-md">
-            {error}
-          </div>
-        )}
+          <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
+            <div className="-space-y-px rounded-md shadow-sm">
+              <div>
+                <label htmlFor="email-address" className="sr-only">
+                  Email address
+                </label>
+                <input
+                  id="email-address"
+                  name="email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  className="relative block w-full appearance-none rounded-none rounded-t-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-500 focus:z-10 focus:border-indigo-500 focus:outline-none focus:ring-indigo-500 sm:text-sm"
+                  placeholder="Email address"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+              </div>
+              <div>
+                <label htmlFor="password" className="sr-only">
+                  Password
+                </label>
+                <input
+                  id="password"
+                  name="password"
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  className="relative block w-full appearance-none rounded-none rounded-b-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-500 focus:z-10 focus:border-indigo-500 focus:outline-none focus:ring-indigo-500 sm:text-sm"
+                  placeholder="Password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+              </div>
+            </div>
 
-        {auth.error && (
-          <div className="bg-red-50 border border-red-200 text-red-800 p-4 mb-4 rounded-md">
-            {auth.error}
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit(onSubmit)}>
-          <div className="form-group">
-            <label
-              htmlFor="email"
-              className="block text-sm font-medium text-gray-700"
-            >
-              Email Address
-            </label>
-            <input
-              id="email"
-              type="email"
-              {...register("email", {
-                required: "Email is required",
-                pattern: {
-                  value: /^\S+@\S+$/i,
-                  message: "Please enter a valid email",
-                },
-              })}
-              className={`form-control ${errors.email ? "is-invalid" : ""}`}
-            />
-            {errors.email && (
-              <span className="error-message">{errors.email.message}</span>
+            {localError && (
+              <div className="rounded-md bg-red-50 p-4">
+                <div className="flex">
+                  <div className="ml-3">
+                    <h3 className="text-sm font-medium text-red-800">
+                      {localError}
+                    </h3>
+                  </div>
+                </div>
+              </div>
             )}
-          </div>
 
-          <div className="form-group">
-            <label
-              htmlFor="password"
-              className="block text-sm font-medium text-gray-700"
-            >
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              {...register("password", {
-                required: "Password is required",
-                minLength: {
-                  value: 8,
-                  message: "Password must be at least 8 characters",
-                },
-              })}
-              className={`form-control ${errors.password ? "is-invalid" : ""}`}
-            />
-            {errors.password && (
-              <span className="error-message">{errors.password.message}</span>
-            )}
-          </div>
+            <div className="flex items-center justify-between">
+              <div className="text-sm">
+                <Link
+                  href="/forgot-password"
+                  className="font-medium text-indigo-600 hover:text-indigo-500"
+                >
+                  Forgot your password?
+                </Link>
+              </div>
+            </div>
 
-          <div className="form-group">
-            <Link href="/forgot-password">
-              <span className="text-sm text-primary-600 hover:text-primary-500 cursor-pointer">
-                Forgot your password?
-              </span>
-            </Link>
-          </div>
-
-          <button
-            type="submit"
-            className="btn btn-primary"
-            disabled={isLoading}
-          >
-            {isLoading ? "Logging in..." : "Login"}
-          </button>
-        </form>
-
-        <p className="mt-6 text-center text-sm text-gray-600">
-          Don&apos;t have an account?{" "}
-          <Link href="/register">
-            <span className="font-medium text-primary-600 hover:text-primary-500 cursor-pointer">
-              Register
-            </span>
-          </Link>
-        </p>
+            <div>
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className={`group relative flex w-full justify-center rounded-md border border-transparent py-2 px-4 text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 
+                ${
+                  isSubmitting
+                    ? "bg-indigo-400 cursor-not-allowed"
+                    : "bg-indigo-600 hover:bg-indigo-700"
+                }`}
+              >
+                {isSubmitting ? "Signing in..." : "Sign in"}
+              </button>
+            </div>
+          </form>
+        </div>
       </div>
-    </div>
+    </Layout>
   );
-}
+};
+
+export default Login;

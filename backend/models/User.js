@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+const twoFactor = require("../utils/twoFactorImproved");
 
 const UserSchema = new mongoose.Schema({
   name: {
@@ -27,7 +28,7 @@ const UserSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ["user", "admin", "superadmin"],
+    enum: ["user", "editor", "admin", "superadmin"],
     default: "user",
   },
   permissions: [
@@ -38,7 +39,10 @@ const UserSchema = new mongoose.Schema({
   ],
   resetPasswordToken: String,
   resetPasswordExpire: Date,
-  twoFactorSecret: String,
+  twoFactorSecret: {
+    type: String,
+    select: false,
+  },
   twoFactorEnabled: {
     type: Boolean,
     default: false,
@@ -60,7 +64,31 @@ const UserSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
-  recoveryCodes: [String],
+  recoveryCodes: {
+    type: [String],
+    select: false,
+  },
+  failedLoginAttempts: {
+    type: Number,
+    default: 0,
+  },
+  isLocked: {
+    type: Boolean,
+    default: false,
+  },
+  lockUntil: Date,
+  lastLoginIP: String,
+  lastTokenRefresh: Date,
+  passwordUpdateFailures: {
+    type: Number,
+    default: 0,
+  },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+  },
+  ipAddress: String,
+  userAgent: String,
 });
 
 // Encrypt password using bcrypt
