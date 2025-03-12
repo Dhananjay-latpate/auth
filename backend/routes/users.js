@@ -5,30 +5,37 @@ const {
   createUser,
   updateUser,
   deleteUser,
-  updateUserRole,
-} = require("../controllers/users");
+  getUserProfile,
+  updateUserProfile,
+} = require("../controllers/userController");
 
-const User = require("../models/User");
+// Import middleware
+const { protect, authorize, hasPermission } = require("../middleware/auth");
 const advancedResults = require("../middleware/advancedResults");
+const User = require("../models/User");
 
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 
-const { protect, authorize, checkPermission } = require("../middleware/auth");
+// Public routes
+router
+  .route("/profile")
+  .get(protect, getUserProfile)
+  .put(protect, updateUserProfile);
 
+// Protected routes - Admin only
 router.use(protect);
+router.use(authorize("admin", "superadmin"));
 
-// Routes restricted to admin and those with manage_users permission
+// Routes with advanced results and permission checks
 router
   .route("/")
-  .get(authorize("admin", "superadmin"), advancedResults(User), getUsers)
-  .post(authorize("admin", "superadmin"), createUser);
+  .get(advancedResults(User), hasPermission("manage_users"), getUsers)
+  .post(hasPermission("manage_users"), createUser);
 
 router
   .route("/:id")
-  .get(checkPermission("manage_users"), getUser)
-  .put(checkPermission("manage_users"), updateUser)
-  .delete(authorize("admin", "superadmin"), deleteUser);
-
-router.route("/:id/role").put(authorize("admin", "superadmin"), updateUserRole);
+  .get(hasPermission("manage_users"), getUser)
+  .put(hasPermission("manage_users"), updateUser)
+  .delete(hasPermission("manage_users"), deleteUser);
 
 module.exports = router;

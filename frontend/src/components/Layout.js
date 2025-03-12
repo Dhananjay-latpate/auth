@@ -1,153 +1,189 @@
+import { useState, useEffect } from "react";
 import Head from "next/head";
+import Link from "next/link";
 import { useRouter } from "next/router";
 import { useAuth } from "../context/AuthContext";
-import { useEffect } from "react";
-import { deleteCookie } from "cookies-next";
+import Sidebar from "./Sidebar";
+import Navbar from "./Navbar";
+import Footer from "./Footer";
+import Alert from "./ui/Alert";
+import { formatPageTitle } from "../utils/titleUtils";
 
-export default function Layout({ children, title, requireAuth = true }) {
-  const { user, loading, logout, hasPermission } = useAuth();
+const Layout = ({
+  children,
+  title = "Authentication App",
+  requireAuth = false,
+  showSidebar = true,
+}) => {
   const router = useRouter();
+  const { user, loading, checkUserLoggedIn, rateLimited } = useAuth();
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [redirectAttempts, setRedirectAttempts] = useState(0);
+  const [showRateLimitAlert, setShowRateLimitAlert] = useState(false);
 
+  // Only check auth when needed and avoid frequent checks
   useEffect(() => {
-    // If the page requires auth and we're not loading and there's no user, redirect
-    if (requireAuth && !loading && !user) {
-      router.push("/login");
-    }
-  }, [requireAuth, loading, user, router]);
+    // Create a unique key to track auth check for this particular render
+    const checkId = Date.now();
 
-  if (requireAuth && loading) {
+    // Only check auth if the page requires it and we haven't already checked
+    const checkAuth = async () => {
+      // If user is already loaded and valid, don't check again
+      if (user && !requireAuth) {
+        setAuthChecked(true);
+        return;
+      }
+
+      if (requireAuth && !authChecked) {
+        try {
+          // Show rate limit alert if needed
+          if (rateLimited) {
+            setShowRateLimitAlert(true);
+            setTimeout(() => {
+              setShowRateLimitAlert(false);
+            }, 5000);
+          }
+
+          // First check if we already have user data before making a new request
+          if (!user || Object.keys(user).length === 0) {
+            // Try to get user data, but we'll accept cached data if rate limited
+            const userData = await checkUserLoggedIn();
+            setAuthChecked(true);
+
+            // If user data is still unavailable after checking (and not rate limited)
+            if (!userData && !loading && !rateLimited && redirectAttempts < 3) {
+              console.log("No user data, redirecting to login");
+              setRedirectAttempts((prev) => prev + 1);
+
+              if (typeof window !== "undefined") {
+                // Add debug flag to help diagnose issues
+                window.location.href = `/login?redirect=${encodeURIComponent(
+                  router.asPath
+                )}&retry=${Date.now()}&debug=1`;
+              }
+            }
+          } else {
+            setAuthChecked(true);
+          }
+        } catch (error) {
+          console.error("Error checking auth:", error);
+          setAuthChecked(true);
+        }
+      } else {
+        setAuthChecked(true);
+      }
+    };
+
+    checkAuth();
+
+    // Clean up function to prevent state updates after unmount
+    return () => {
+      // Nothing to clean up for now
+    };
+  }, [
+    requireAuth,
+    router,
+    checkUserLoggedIn,
+    loading,
+    redirectAttempts,
+    authChecked,
+    rateLimited,
+    user,
+  ]);
+
+  const toggleSidebar = () => {
+    setIsSidebarOpen(!isSidebarOpen);
+  };
+
+  // Determine if we should show navigation (don't show on login, register, etc.)
+  const isAuthPage =
+    ["/login", "/register", "/forgot-password"].includes(router.pathname) ||
+    router.pathname.startsWith("/reset-password");
+
+  // If we're still checking auth and the page requires auth, show a loading state
+  if (requireAuth && loading && !authChecked) {
     return (
-      <div className="min-h-screen flex justify-center items-center">
-        <div className="text-lg text-gray-500">Loading...</div>
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-indigo-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600 text-lg">Loading your session...</p>
+        </div>
       </div>
     );
   }
 
-  // If auth is required but there's no user, don't render anything
-  // Redirection will happen in the useEffect hook
-  if (requireAuth && !user) {
-    return null;
+  // Customize layout based on page type
+  if (isAuthPage) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50 flex flex-col">
+        <Head>
+          {/* Fix: Use the formatPageTitle utility to create a single text node */}
+          <title>{formatPageTitle(title)}</title>
+          <meta name="description" content="Secure authentication system" />
+          <link rel="icon" href="/favicon.ico" />
+        </Head>
+
+        <main className="flex-grow flex items-center justify-center">
+          <div className="w-full max-w-md slide-in">
+            <div className="text-center mb-8">
+              <Link href="/" className="inline-block">
+                <div className="flex items-center justify-center">
+                  <div className="rounded-full bg-indigo-600 p-2 text-white">
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="h-6 w-6"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="2"
+                        d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
+                      />
+                    </svg>
+                  </div>
+                </div>
+              </Link>
+              <h2 className="mt-3 text-3xl font-bold text-gray-900">{title}</h2>
+            </div>
+            {children}
+          </div>
+        </main>
+
+        <Footer />
+      </div>
+    );
   }
 
   return (
-    <div>
+    <div className="min-h-screen flex flex-col">
       <Head>
-        <title>
-          {title ? `${title} - Secure Auth System` : "Secure Auth System"}
-        </title>
+        {/* Fix: Use the formatPageTitle utility to create a single text node */}
+        <title>{formatPageTitle(title)}</title>
+        <meta name="description" content="Secure authentication system" />
+        <link rel="icon" href="/favicon.ico" />
       </Head>
 
-      {requireAuth && (
-        <nav className="bg-white shadow">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex justify-between h-16">
-              <div className="flex items-center">
-                <div className="text-xl font-bold text-primary-600">
-                  Secure Auth System
-                </div>
-              </div>
-              <div className="flex items-center space-x-4">
-                <button
-                  onClick={() => router.push("/dashboard")}
-                  className="px-3 py-2 rounded text-sm text-gray-700 hover:bg-gray-100 focus:outline-none"
-                >
-                  Dashboard
-                </button>
+      <Navbar toggleSidebar={toggleSidebar} />
 
-                {/* Add Register New Account button for admins */}
-                {user &&
-                  (user.role === "admin" || user.role === "superadmin") && (
-                    <button
-                      onClick={() => router.push("/register?new_account=true")}
-                      className="px-3 py-2 rounded text-sm text-gray-700 hover:bg-gray-100 focus:outline-none"
-                    >
-                      Register New User
-                    </button>
-                  )}
-
-                {hasPermission && hasPermission("manage_users") && (
-                  <button
-                    onClick={() => router.push("/admin/users")}
-                    className="px-3 py-2 rounded text-sm text-gray-700 hover:bg-gray-100 focus:outline-none"
-                  >
-                    Manage Users
-                  </button>
-                )}
-
-                {user &&
-                  (user.role === "admin" || user.role === "superadmin") && (
-                    <button
-                      onClick={() => router.push("/admin/roles")}
-                      className="px-3 py-2 rounded text-sm text-gray-700 hover:bg-gray-100 focus:outline-none"
-                    >
-                      Manage Roles
-                    </button>
-                  )}
-
-                <button
-                  onClick={() => router.push("/profile")}
-                  className="px-3 py-2 rounded text-sm text-gray-700 hover:bg-gray-100 focus:outline-none"
-                >
-                  My Profile
-                </button>
-
-                <button
-                  onClick={(e) => {
-                    e.preventDefault();
-                    console.log("Logout clicked from Layout");
-
-                    // Create a function for clean logout
-                    const performLogout = () => {
-                      try {
-                        // Clear all authentication tokens first
-                        deleteCookie("token", { path: "/" });
-                        localStorage.removeItem("auth_token");
-                        localStorage.removeItem("user_data");
-                        localStorage.removeItem("isLoggingOut");
-
-                        // Remove authorization header
-                        delete axios.defaults.headers.common["Authorization"];
-
-                        // Add a timestamp to prevent caching issues
-                        const timestamp = Date.now();
-
-                        // Use the logout parameter to indicate explicit logout intent
-                        const logoutUrl = `/login?logged_out=true&t=${timestamp}`;
-
-                        console.log("Redirecting to:", logoutUrl);
-
-                        // Replace current location with login page to clear history
-                        window.location.replace(logoutUrl);
-                      } catch (error) {
-                        console.error("Error during logout:", error);
-                        // Fallback to context logout in case of error
-                        if (typeof logout === "function") {
-                          logout();
-                        } else {
-                          // Last resort fallback
-                          window.location.href = "/login?logged_out=true";
-                        }
-                      }
-                    };
-
-                    // Execute the logout function
-                    performLogout();
-                  }}
-                  className="px-3 py-2 rounded text-sm text-red-600 hover:bg-gray-100 focus:outline-none"
-                >
-                  Logout
-                </button>
-              </div>
-            </div>
-          </div>
-        </nav>
-      )}
-
-      <div
-        className={requireAuth ? "max-w-7xl mx-auto py-6 sm:px-6 lg:px-8" : ""}
-      >
-        {children}
+      <div className="flex flex-1">
+        {showSidebar && <Sidebar isOpen={isSidebarOpen} />}
+        <main className="flex-grow">{children}</main>
       </div>
+
+      <Footer />
+
+      {showRateLimitAlert && (
+        <Alert
+          type="warning"
+          message="You are being rate limited. Please try again later."
+        />
+      )}
     </div>
   );
-}
+};
+
+export default Layout;

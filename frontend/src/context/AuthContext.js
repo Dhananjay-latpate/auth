@@ -2,6 +2,7 @@ import { createContext, useState, useEffect, useContext, useRef } from "react";
 import { useRouter } from "next/router";
 import axios from "axios";
 import { setCookie, getCookie, deleteCookie } from "cookies-next";
+import { throttle } from "../utils/throttle";
 
 // Create context
 const AuthContext = createContext(null);
@@ -15,31 +16,87 @@ const setupAxiosDefaults = (token) => {
   }
 };
 
-// Add centralized error handling
-const handleError = (error) => {
-  const message = error.response?.data?.error || "An error occurred";
-  setError(message);
-  setTimeout(() => setError(null), 5000);
-  return message;
-};
-
 // Update token storage to use only cookies
 const storeAuthToken = (token) => {
-  if (!token) return;
+  if (!token) {
+    console.error("[Auth] Attempted to store empty token");
+    return;
+  }
 
-  setCookie("token", token.trim(), {
-    maxAge: 30 * 24 * 60 * 60,
-    path: "/",
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-  });
+  try {
+    // Clean the token to remove any whitespace
+    const cleanToken = token.trim();
+    console.log("[Auth] Storing authentication token");
 
-  setupAxiosDefaults(token.trim());
+    // Store in cookie
+    setCookie("token", cleanToken, {
+      maxAge: 30 * 24 * 60 * 60, // 30 days
+      path: "/",
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+    });
+
+    // Also save to localStorage for backup
+    if (typeof window !== "undefined") {
+      localStorage.setItem("auth_token", cleanToken);
+    }
+
+    // Set default authorization header
+    setupAxiosDefaults(cleanToken);
+
+    console.log("[Auth] Token stored successfully");
+    return true;
+  } catch (error) {
+    console.error("[Auth] Error storing token:", error);
+    return false;
+  }
 };
 
 const clearAuthToken = () => {
   deleteCookie("token", { path: "/" });
+  if (typeof window !== "undefined") {
+    localStorage.removeItem("auth_token");
+  }
   delete axios.defaults.headers.common["Authorization"];
+};
+
+// Create a more resilient user data cache
+const USER_CACHE_KEY = "user_data";
+const USER_CACHE_TIMESTAMP_KEY = "user_data_timestamp";
+const CACHE_MAX_AGE = 5 * 60 * 1000; // 5 minutes
+
+const cacheUserData = (userData) => {
+  if (typeof window !== "undefined" && userData) {
+    localStorage.setItem(USER_CACHE_KEY, JSON.stringify(userData));
+    localStorage.setItem(USER_CACHE_TIMESTAMP_KEY, Date.now().toString());
+  }
+};
+
+const getCachedUserData = () => {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const cachedData = localStorage.getItem(USER_CACHE_KEY);
+    const timestamp = localStorage.getItem(USER_CACHE_TIMESTAMP_KEY);
+
+    if (!cachedData || !timestamp) return null;
+
+    // Check if cache is still valid
+    const now = Date.now();
+    const cacheAge = now - parseInt(timestamp);
+
+    if (cacheAge > CACHE_MAX_AGE) {
+      // Cache expired
+      return null;
+    }
+
+    return JSON.parse(cachedData);
+  } catch (error) {
+    console.error("Error reading cached user data:", error);
+    localStorage.removeItem(USER_CACHE_KEY);
+    localStorage.removeItem(USER_CACHE_TIMESTAMP_KEY);
+    return null;
+  }
 };
 
 export const AuthProvider = ({ children }) => {
@@ -48,27 +105,43 @@ export const AuthProvider = ({ children }) => {
   const [error, setError] = useState(null);
   const [requiresTwoFactor, setRequiresTwoFactor] = useState(false);
   const [twoFactorEmail, setTwoFactorEmail] = useState("");
+  const [rateLimited, setRateLimited] = useState(false);
 
   const router = useRouter();
 
   // Use refs for concurrency and interval management
   const authPromiseRef = useRef(null);
   const tokenRefreshIntervalRef = useRef(null);
+  const apiRetryTimeoutRef = useRef(null);
 
   // Initialize auth on mount
   useEffect(() => {
     const initAuth = async () => {
-      // Get token from localStorage or cookie
-      const token =
-        typeof window !== "undefined"
-          ? localStorage.getItem("auth_token") || getCookie("token")
-          : null;
+      try {
+        // Try to load cached user data immediately to avoid initial loading state
+        const cachedUser = getCachedUserData();
+        if (cachedUser) {
+          setUser(cachedUser);
+          setLoading(false);
+        }
 
-      if (token) {
-        // Set default authorization header
-        setupAxiosDefaults(token.trim());
+        // Get token from localStorage or cookie
+        const token =
+          typeof window !== "undefined"
+            ? localStorage.getItem("auth_token") || getCookie("token")
+            : null;
+
+        if (token) {
+          // Set default authorization header
+          setupAxiosDefaults(token.trim());
+          await checkUserLoggedIn();
+        } else {
+          setLoading(false);
+        }
+      } catch (error) {
+        console.error("Auth initialization error:", error);
+        setLoading(false);
       }
-      await checkUserLoggedIn();
     };
 
     initAuth();
@@ -78,8 +151,14 @@ export const AuthProvider = ({ children }) => {
       if (tokenRefreshIntervalRef.current) {
         clearInterval(tokenRefreshIntervalRef.current);
       }
+      if (apiRetryTimeoutRef.current) {
+        clearTimeout(apiRetryTimeoutRef.current);
+      }
     };
   }, []);
+
+  // Throttled version of checkUserLoggedIn to prevent too many calls
+  const throttledCheckUserLoggedIn = throttle(checkUserLoggedIn, 2000);
 
   // Setup a token refresh mechanism
   const setupTokenRefresh = () => {
@@ -195,6 +274,8 @@ export const AuthProvider = ({ children }) => {
       localStorage.removeItem("auth_token");
       sessionStorage.clear();
 
+      console.log(`[Auth] Login attempt for: ${email}`);
+
       const res = await axios.post(
         `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/login`,
         { email, password }
@@ -210,12 +291,52 @@ export const AuthProvider = ({ children }) => {
         }
 
         console.log("[Auth] Login successful, setting token");
-        storeAuthToken(res.data.token);
-        // Use very explicit no_redirect to bypass all checks
-        window.location.replace("/dashboard?no_redirect=true");
-        return res.data;
+        const token = res.data.token;
+
+        if (!token) {
+          console.error(
+            "[Auth] No token received in successful login response"
+          );
+          throw new Error("No authentication token received");
+        }
+
+        storeAuthToken(token);
+
+        // Use a simpler approach - set the user from response data if available
+        if (res.data.data) {
+          setUser(res.data.data);
+          cacheUserData(res.data.data);
+          setupTokenRefresh();
+
+          // Redirect to dashboard with flag to prevent redirect loops
+          console.log("[Auth] Redirecting to dashboard after login");
+          window.location.href = "/dashboard?no_redirect=true";
+          return res.data;
+        }
+
+        // Fetch user data if not included in response
+        try {
+          const userData = await fetchUserData(token);
+          if (userData) {
+            setUser(userData);
+            cacheUserData(userData);
+            setupTokenRefresh();
+          }
+
+          // Redirect to dashboard with flag to prevent redirect loops
+          console.log("[Auth] Redirecting to dashboard after login");
+          window.location.href = "/dashboard?no_redirect=true";
+          return res.data;
+        } catch (err) {
+          console.error("Error fetching initial user data:", err);
+          // Still redirect even if we can't get user data - the token is valid
+          window.location.href = "/dashboard?no_redirect=true";
+          return res.data;
+        }
+      } else {
+        console.error("[Auth] Login failed but no error returned from server");
+        throw new Error(res.data.error || "Login failed. Please try again.");
       }
-      return null;
     } catch (error) {
       console.error("Login error:", error);
       let errorMessage = "Login failed. Please check your credentials.";
@@ -231,6 +352,32 @@ export const AuthProvider = ({ children }) => {
 
       setError(errorMessage);
       setTimeout(() => setError(null), 5000);
+      throw error;
+    }
+  };
+
+  // Helper function to fetch user data with a specific token
+  const fetchUserData = async (token) => {
+    try {
+      // Set up headers with the provided token
+      const headers = { Authorization: `Bearer ${token.trim()}` };
+
+      const res = await axios.get(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/me`,
+        {
+          headers,
+          timeout: 10000,
+          // Add cache-busting query param
+          params: { t: Date.now() },
+        }
+      );
+
+      if (res.data.success) {
+        return res.data.data;
+      }
+      return null;
+    } catch (error) {
+      console.error("Error fetching specific user data:", error);
       throw error;
     }
   };
@@ -301,8 +448,12 @@ export const AuthProvider = ({ children }) => {
   const logout = async () => {
     try {
       const token = getCookie("token");
+
+      // Immediately clear local auth state first
       clearAuthToken();
       setUser(null);
+      localStorage.removeItem(USER_CACHE_KEY);
+      localStorage.removeItem(USER_CACHE_TIMESTAMP_KEY);
 
       if (tokenRefreshIntervalRef.current) {
         clearInterval(tokenRefreshIntervalRef.current);
@@ -310,37 +461,72 @@ export const AuthProvider = ({ children }) => {
 
       // Call logout API (non-blocking)
       if (token) {
-        await axios.get(
-          `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/logout`
-        );
+        try {
+          await axios.get(
+            `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/logout`
+          );
+          console.log("[Auth] Logout API call successful");
+        } catch (error) {
+          console.error("[Auth] Logout API call error:", error);
+          // Continue with client-side logout even if API call fails
+        }
       }
     } catch (error) {
       console.error("Logout error:", error);
     } finally {
-      window.location.replace("/login?logged_out=true");
+      // Add a small delay to ensure state updates before redirect
+      setTimeout(() => {
+        window.location.href = "/login?logged_out=true";
+      }, 100);
     }
   };
 
   // Check if user is logged in with concurrency handling using a stored promise
-  const checkUserLoggedIn = async () => {
+  // Apply improvements to handle rate limiting
+  async function checkUserLoggedIn() {
     console.log("[Auth] Checking login state");
+
     if (authPromiseRef.current) {
       console.log("[Auth] Auth check already in progress");
       return authPromiseRef.current;
     }
 
+    if (rateLimited) {
+      console.log("[Auth] Rate limited, using cached data");
+      return user; // Return current user state if rate limited
+    }
+
+    // If we have recent cached user data (< 30 seconds old), use it without API call
+    const cachedUser = getCachedUserData();
+    const now = Date.now();
+    const cacheTimestamp = parseInt(
+      localStorage.getItem(USER_CACHE_TIMESTAMP_KEY) || "0"
+    );
+    const cacheAge = now - cacheTimestamp;
+
+    if (cachedUser && cacheAge < 30000) {
+      // 30 seconds
+      console.log("[Auth] Using very recent cached data, skipping API call");
+      setUser(cachedUser);
+      return cachedUser;
+    }
+
     authPromiseRef.current = (async () => {
       try {
+        // Always try to use cached data first
+        if (cachedUser) {
+          setUser(cachedUser);
+        }
+
         // Retrieve token from cookie or localStorage
         let token =
           getCookie("token") ||
           (typeof window !== "undefined" && localStorage.getItem("auth_token"));
 
-        console.log("Checking auth:", token ? "Token exists" : "No token");
-
         if (!token) {
           setUser(null);
-          localStorage.removeItem("user_data");
+          localStorage.removeItem(USER_CACHE_KEY);
+          localStorage.removeItem(USER_CACHE_TIMESTAMP_KEY);
           return null;
         }
 
@@ -355,40 +541,79 @@ export const AuthProvider = ({ children }) => {
           });
         }
 
-        // Attempt to use cached user data (non-blocking)
-        const cachedUser =
-          typeof window !== "undefined" && localStorage.getItem("user_data");
+        // Add delay between API calls to reduce load
         if (cachedUser) {
-          try {
-            const userData = JSON.parse(cachedUser);
-            setUser(userData);
-            // Still continue to fetch fresh data below
-          } catch (e) {
-            console.error("Error parsing cached user data", e);
-            localStorage.removeItem("user_data");
-          }
+          // If we have cached data already, delay new API call slightly
+          await new Promise((resolve) => setTimeout(resolve, 100));
         }
 
         // Fetch fresh user data from the API
         console.log("Fetching user data from API");
+
+        // Generate a unique cache-busting parameter
+        const cacheBuster = `t=${Date.now()}`;
+
         const res = await axios.get(
-          `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/me`
+          `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/me?${cacheBuster}`,
+          {
+            headers: {
+              "Cache-Control": "no-cache",
+              Authorization: `Bearer ${token.trim()}`,
+            },
+            timeout: 10000,
+          }
         );
 
         if (res.data.success) {
+          console.log("[Auth] Successfully fetched user data");
           setUser(res.data.data);
-          localStorage.setItem("user_data", JSON.stringify(res.data.data));
+          cacheUserData(res.data.data);
           setupTokenRefresh();
           return res.data.data;
         }
+
+        return null;
       } catch (error) {
         console.error("Error fetching user:", error);
+
+        // Handle rate limiting specifically
+        if (error.response?.status === 429) {
+          console.warn("Rate limited when fetching user data");
+          setRateLimited(true);
+
+          // Use cached data when rate limited
+          const cachedUser = getCachedUserData();
+          if (cachedUser) {
+            console.log("Using cached user data during rate limiting");
+            setUser(cachedUser);
+          }
+
+          // Schedule retry after the rate limit window
+          const retryAfter = error.response?.data?.retryAfter || 60; // Default to 60 seconds
+          console.log(`Will retry after ${retryAfter} seconds`);
+
+          if (apiRetryTimeoutRef.current) {
+            clearTimeout(apiRetryTimeoutRef.current);
+          }
+
+          apiRetryTimeoutRef.current = setTimeout(() => {
+            console.log(
+              "Rate limit period expired, resetting rate limited state"
+            );
+            setRateLimited(false);
+            apiRetryTimeoutRef.current = null;
+          }, retryAfter * 1000);
+
+          return cachedUser;
+        }
+
         if (error.response && error.response.status === 401) {
           console.log("Unauthorized access - clearing tokens");
           setUser(null);
           deleteCookie("token", { path: "/" });
           localStorage.removeItem("auth_token");
-          localStorage.removeItem("user_data");
+          localStorage.removeItem(USER_CACHE_KEY);
+          localStorage.removeItem(USER_CACHE_TIMESTAMP_KEY);
           delete axios.defaults.headers.common["Authorization"];
         }
       } finally {
@@ -399,7 +624,7 @@ export const AuthProvider = ({ children }) => {
     })();
 
     return authPromiseRef.current;
-  };
+  }
 
   // Setup Two-Factor Authentication
   const setup2FA = async () => {
@@ -565,13 +790,14 @@ export const AuthProvider = ({ children }) => {
         error,
         requiresTwoFactor,
         twoFactorEmail,
+        rateLimited,
         register,
         login,
         logout,
         verifyTwoFactor,
         verifyRecoveryCode,
         hasPermission,
-        checkUserLoggedIn,
+        checkUserLoggedIn: throttledCheckUserLoggedIn, // Use the throttled version
         setup2FA,
         enable2FA,
         disable2FA,

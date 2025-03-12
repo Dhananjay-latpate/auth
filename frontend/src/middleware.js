@@ -1,174 +1,51 @@
 import { NextResponse } from "next/server";
-// Remove the import that's causing the error
-// import { verifyToken } from "./utils/auth";
 
-// We need to update imports to use dynamic imports for Edge Runtime compatibility
-// Import utilities as ESM for Next.js middleware
-import { jwtVerify } from "jose";
-
-// Create a simple function to verify tokens in middleware
-async function verifyAuthToken(token) {
-  if (!token) return null;
-
-  try {
-    // Convert JWT_SECRET to Uint8Array as required by jose
-    const secretKey = new TextEncoder().encode(
-      process.env.JWT_SECRET || "fallbacksecretfordevonly"
-    );
-    const { payload } = await jwtVerify(token, secretKey);
-    return payload;
-  } catch (error) {
-    console.error("Token verification failed:", error.message);
-    return null;
-  }
-}
-
-// For middleware, we need to use direct imports rather than require
-// since Next.js Edge Runtime doesn't support CommonJS require
-const redirectTracker = {
-  history: [],
-  maxRedirects: 5,
-  timeWindow: 3000, // 3 seconds
-
-  trackRedirect(path) {
-    const now = Date.now();
-
-    // Clean up old redirects outside the time window
-    this.history = this.history.filter(
-      (item) => now - item.time < this.timeWindow
-    );
-
-    // Add current redirect
-    this.history.push({
-      path,
-      time: now,
-    });
-
-    // Check if we've exceeded the maximum redirects in the time window
-    if (this.history.length >= this.maxRedirects) {
-      return true; // Break the redirect chain
-    }
-
-    return false;
-  },
-};
-
-// Inline authDebug functions for middleware
-const logMiddlewareDecision = (path, isProtected, hasToken, action) => {
-  console.log(`[Middleware] Path: ${path}, Auth: ${isProtected}`);
-
-  if (action === "bypass") {
-    console.log("[Middleware] Bypass flag detected, skipping redirect checks");
-  } else if (isProtected && !hasToken) {
-    console.log("[Middleware] Protected route without token -> login");
-  } else if (!isProtected && hasToken) {
-    console.log("[Middleware] Auth route with token -> dashboard");
-  } else if (action === "loop") {
-    console.log("[Middleware] Rapid redirects detected - breaking cycle");
-  }
-};
-
-// Auth routes - redirect to dashboard if user is logged in
-const authRoutes = ["/login", "/forgot-password", "/reset-password"];
-
-// Register route needs special handling when coming from dashboard
-const registerRoute = "/register";
-
-// Protected routes - redirect to login if user is not logged in
-const protectedRoutes = [
-  "/dashboard",
-  "/profile",
-  "/settings",
-  "/admin",
-  "/users",
-  "/roles",
-  "/verify-2fa",
-];
-
-export async function middleware(request) {
-  const { pathname, search } = request.nextUrl;
-
-  // Skip middleware for static assets, API routes, etc.
-  if (
-    pathname.startsWith("/_next") ||
-    pathname.startsWith("/api") ||
-    pathname.includes(".")
-  ) {
-    return NextResponse.next();
-  }
-
-  // Check for bypass flags to break redirect loops
-  const hasRedirectBypass =
-    search.includes("no_redirect=true") ||
-    search.includes("bypass=true") ||
-    search.includes("logged_out=true");
-
-  // Check if the request is coming from dashboard - improve detection
-  const isFromDashboard =
-    search.includes("from=dashboard") ||
-    search.includes("admin_action=true") || // Also check for admin_action parameter
-    request.headers.get("referer")?.includes("/dashboard");
-
-  if (hasRedirectBypass) {
-    // Log middleware decision with bypass action
-    logMiddlewareDecision(
-      pathname,
-      protectedRoutes.includes(pathname),
-      false,
-      "bypass"
-    );
-    return NextResponse.next();
-  }
+export function middleware(request) {
+  const { pathname } = request.nextUrl;
 
   // Get token from cookies
-  const token = request.cookies.get("token")?.value;
-  const hasToken = !!token;
-  const isAuthRoute = authRoutes.includes(pathname);
-  const isRegisterRoute = pathname === registerRoute;
-  const isProtectedRoute = protectedRoutes.includes(pathname);
+  const token = request.cookies.get("token");
+  const url = request.nextUrl.clone();
 
-  // Check for redirect loops
-  const inLoop = redirectTracker.trackRedirect(pathname);
+  // More detailed logging
+  console.log(`[Middleware] Path: ${pathname}, Auth: ${token ? "yes" : "no"}`);
 
-  if (inLoop) {
-    // Log middleware decision with loop action
-    logMiddlewareDecision(pathname, isProtectedRoute, hasToken, "loop");
+  // Check for no_redirect or debug query param to break redirect loops
+  const searchParams = request.nextUrl.searchParams;
+  const bypassRedirect =
+    searchParams.has("no_redirect") || searchParams.has("debug");
 
-    // Break the loop by allowing the request through without redirects
-    const url = request.nextUrl.clone();
-    url.searchParams.set("no_redirect", "true");
+  if (bypassRedirect) {
+    console.log("[Middleware] Bypass flag detected, skipping redirect checks");
+    return NextResponse.next();
+  }
+
+  // Auth routes - redirect to dashboard if already logged in
+  const authRoutes = ["/login", "/register", "/forgot-password"];
+  const isAuthRoute = authRoutes.some(
+    (route) => pathname.startsWith(route) || pathname === route
+  );
+
+  // Only redirect if the token is actually valid (not just present)
+  if (isAuthRoute && token && token.value && token.value.length > 20) {
+    console.log("[Middleware] Auth route with valid token -> dashboard");
+    url.pathname = "/dashboard";
     return NextResponse.redirect(url);
   }
 
-  // Log middleware decision for regular flow
-  logMiddlewareDecision(pathname, isProtectedRoute, hasToken, "normal");
+  // Protected routes - redirect to login if not logged in
+  const protectedRoutes = ["/dashboard", "/profile", "/settings", "/admin"];
+  const isProtectedRoute = protectedRoutes.some((route) =>
+    pathname.startsWith(route)
+  );
 
-  // Special handling for register page when user is logged in
-  if (isRegisterRoute && hasToken) {
-    // If coming from dashboard, allow access to register page
-    if (isFromDashboard) {
-      console.log(
-        "[Middleware] Allowing access to register page from dashboard"
-      );
-      return NextResponse.next();
-    }
+  if (isProtectedRoute && (!token || !token.value)) {
+    console.log("[Middleware] Protected route without token -> login");
+    url.pathname = "/login";
+    url.searchParams.set("redirect", pathname);
 
-    // Otherwise redirect to dashboard as with other auth routes
-    const url = new URL("/dashboard", request.url);
-    url.searchParams.set("from", pathname);
-    return NextResponse.redirect(url);
-  }
-
-  // Regular auth route handling (excluding register with special case above)
-  if (isAuthRoute && hasToken) {
-    const url = new URL("/dashboard", request.url);
-    url.searchParams.set("from", pathname);
-    return NextResponse.redirect(url);
-  }
-
-  if (isProtectedRoute && !hasToken) {
-    const url = new URL("/login", request.url);
-    url.searchParams.set("from", pathname);
+    // Use timestamp to prevent caching issues and loops
+    url.searchParams.set("t", Date.now().toString());
     return NextResponse.redirect(url);
   }
 
@@ -176,5 +53,8 @@ export async function middleware(request) {
 }
 
 export const config = {
-  matcher: "/((?!api|_next/static|_next/image|favicon.ico).*)",
+  matcher: [
+    // Match all request paths except for static files, api routes, and _next
+    "/((?!api|_next/static|_next/image|favicon.ico|.*\\.png$).*)",
+  ],
 };

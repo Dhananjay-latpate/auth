@@ -10,6 +10,7 @@ const connectDB = require("./config/db");
 const errorHandler = require("./middleware/error");
 const morgan = require("morgan");
 const logger = require("../middleware/logger"); // Import our new logger
+const { apiLimiter } = require("./middleware/rateLimit"); // Import rate limiter
 
 // Load env vars
 dotenv.config();
@@ -71,6 +72,9 @@ const limiter = rateLimit({
   max: 100, // 100 requests per 10 mins
 });
 app.use("/api/", limiter);
+
+// Apply rate limiter to all requests
+app.use(apiLimiter);
 
 // Use auth logger middleware
 app.use(logger);

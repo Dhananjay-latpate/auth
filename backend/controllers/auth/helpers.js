@@ -16,51 +16,41 @@ const generateToken = (userId) => {
   }
 };
 
-// Send token response with enhanced security and sanitized user data
-const sendTokenResponse = (user, statusCode, res) => {
-  try {
-    if (!user || !user._id) {
-      throw new Error("Invalid user data for token generation");
-    }
+/**
+ * Get JWT token, create cookie, and send response
+ * @param {Object} user - User object
+ * @param {number} statusCode - HTTP status code
+ * @param {Object} res - Express response object
+ * @param {Object} [userData] - Optional user data to send in response
+ */
+const sendTokenResponse = (user, statusCode, res, userData = null) => {
+  // Create token
+  const token = user.getSignedJwtToken();
 
-    // Use either the model method or the fallback function
-    const token = user.getSignedJwtToken?.() || generateToken(user._id);
+  // Options for cookie
+  const options = {
+    expires: new Date(
+      Date.now() + process.env.JWT_COOKIE_EXPIRE * 24 * 60 * 60 * 1000
+    ),
+    httpOnly: true,
+  };
 
-    const options = {
-      expires: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "strict" : "lax",
-      path: "/",
-    };
-
-    // Sanitize user data before sending in response
-    const sanitizedUser = {
-      id: user._id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      permissions: user.permissions || [],
-    };
-
-    // Remove any sensitive fields that might have been accidentally included
-    delete sanitizedUser.password;
-    delete sanitizedUser.twoFactorSecret;
-    delete sanitizedUser.resetPasswordToken;
-    delete sanitizedUser.resetPasswordExpire;
-
-    res.status(statusCode).cookie("token", token, options).json({
-      success: true,
-      token,
-      user: sanitizedUser,
-    });
-  } catch (error) {
-    console.error("Token response error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Error generating authentication token",
-    });
+  // Set secure flag in production
+  if (process.env.NODE_ENV === "production") {
+    options.secure = true;
   }
+
+  const responseBody = {
+    success: true,
+    token,
+  };
+
+  // Add user data to response if provided
+  if (userData) {
+    responseBody.data = userData;
+  }
+
+  res.status(statusCode).cookie("token", token, options).json(responseBody);
 };
 
 // Validate email format

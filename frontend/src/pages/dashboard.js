@@ -1,332 +1,270 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import Layout from "../components/Layout";
-import Link from "next/link";
-import { setCookie, getCookie, deleteCookie } from "cookies-next";
-import axios from "axios";
-import Head from "next/head";
+import Card from "../components/ui/Card";
+import Button from "../components/ui/Button";
+import Alert from "../components/ui/Alert";
 
-export default function Dashboard() {
-  const { user, loading, logout: authLogout, checkUserLoggedIn } = useAuth();
-  const [initialLoad, setInitialLoad] = useState(true);
-  const [apiError, setApiError] = useState(null);
-  const [isRedirecting, setIsRedirecting] = useState(false);
-  // Add reference to prevent multiple data refresh attempts
-  const dataRefreshAttempted = useRef(false);
+const Dashboard = () => {
+  const { user } = useAuth();
+  const [greeting, setGreeting] = useState("");
+  const [securityScore, setSecurityScore] = useState(0);
+  const [securityTips, setSecurityTips] = useState([]);
 
-  // Force a refresh of user data when the component mounts
   useEffect(() => {
-    const refreshUserData = async () => {
-      // Prevent multiple refresh attempts
-      if (dataRefreshAttempted.current) return;
-      dataRefreshAttempted.current = true;
+    const hour = new Date().getHours();
+    let newGreeting;
 
-      try {
-        console.log("Dashboard - Initial render, checking auth state");
-
-        // Avoid multiple redirects
-        if (isRedirecting) return;
-
-        // Check if token exists in localStorage or cookie
-        const localToken = localStorage.getItem("auth_token");
-        const cookieToken = getCookie("token");
-
-        // If no token in either place, redirect immediately
-        if (!localToken && !cookieToken) {
-          console.log("No authentication tokens found, redirecting to login");
-          setIsRedirecting(true);
-          window.location.replace("/login"); // Use replace for clean history
-          return;
-        }
-
-        // Synchronize token between localStorage and cookie if needed
-        if (localToken && !cookieToken) {
-          console.log("Restoring token from localStorage to cookie");
-          setCookie("token", localToken, {
-            maxAge: 30 * 24 * 60 * 60,
-            path: "/",
-            sameSite: "lax",
-          });
-        } else if (cookieToken && !localToken) {
-          console.log("Restoring token from cookie to localStorage");
-          localStorage.setItem("auth_token", cookieToken);
-        }
-
-        // Set up axios auth header with the available token
-        const effectiveToken = localToken || cookieToken;
-        if (effectiveToken && !axios.defaults.headers.common["Authorization"]) {
-          console.log("Setting axios default Authorization header");
-          axios.defaults.headers.common[
-            "Authorization"
-          ] = `Bearer ${effectiveToken}`;
-        }
-
-        // Only make an API call if we don't have user data yet
-        if (!user) {
-          const userData = await checkUserLoggedIn();
-
-          if (!userData) {
-            console.log("No user data returned, checking tokens again");
-            // Double check if tokens were cleared during the checkUserLoggedIn process
-            // This might happen if the API returns 401 and the auth context clears tokens
-            if (!getCookie("token") && !localStorage.getItem("auth_token")) {
-              console.log(
-                "Tokens were cleared during check, redirecting to login"
-              );
-              setIsRedirecting(true);
-              window.location.replace("/login");
-              return;
-            }
-          }
-        }
-      } catch (error) {
-        console.error("Error refreshing user data:", error);
-
-        // Handle unauthorized errors
-        if (error.response?.status === 401) {
-          console.log("401 Unauthorized response, clearing auth data");
-          setIsRedirecting(true);
-
-          // Clear all auth data
-          deleteCookie("token", { path: "/" });
-          localStorage.removeItem("auth_token");
-          localStorage.removeItem("user_data");
-          delete axios.defaults.headers.common["Authorization"];
-
-          // Redirect to login
-          window.location.replace("/login");
-          return;
-        }
-
-        // For other errors, just show error message
-        setApiError(
-          "Failed to load user data. Please try refreshing the page."
-        );
-      } finally {
-        if (!isRedirecting) {
-          setInitialLoad(false);
-        }
-      }
-    };
-
-    // Only call refreshUserData if we're not already redirecting
-    if (!isRedirecting) {
-      refreshUserData();
+    if (hour < 12) {
+      newGreeting = "Good morning";
+    } else if (hour < 18) {
+      newGreeting = "Good afternoon";
+    } else {
+      newGreeting = "Good evening";
     }
 
-    // Reset the data refresh flag when the component unmounts
-    return () => {
-      dataRefreshAttempted.current = false;
-    };
-  }, [checkUserLoggedIn, isRedirecting, user]);
+    setGreeting(newGreeting);
 
-  // Force token refresh on suspicious auth state
-  useEffect(() => {
-    if (isRedirecting || !user) return;
-
-    const refreshAuth = async () => {
-      try {
-        const result = await checkUserLoggedIn();
-        if (!result) {
-          // Force token clearing and login redirect
-          window.location.href = "/login?clear=true&bypass=true";
-        }
-      } catch (err) {
-        console.error("Auth refresh failed:", err);
-        window.location.href = "/login?clear=true&bypass=true";
+    // Calculate security score
+    if (user) {
+      let score = 50; // Base score
+      if (user.twoFactorEnabled) score += 30;
+      if (user.passwordUpdatedAt) {
+        // Check if password was updated in the last 90 days
+        const lastUpdate = new Date(user.passwordUpdatedAt);
+        const now = new Date();
+        const daysSinceUpdate = Math.floor((now - lastUpdate) / (1000 * 60 * 60 * 24));
+        if (daysSinceUpdate < 90) score += 20;
       }
-    };
+      setSecurityScore(Math.min(score, 100));
 
-    const token = getCookie("token");
-    if (!token) {
-      refreshAuth();
-    }
-  }, [isRedirecting, user]);
-
-  // Don't show loading state if we have cached user data
-  const showLoading = loading || initialLoad;
-  const cachedUser =
-    typeof window !== "undefined"
-      ? JSON.parse(localStorage.getItem("user_data") || "null")
-      : null;
-
-  // Improved handleLogout function to fix the redirect issue
-  const handleLogout = () => {
-    // Set redirecting state to prevent multiple attempts
-    setIsRedirecting(true);
-
-    try {
-      console.log("Starting logout process from dashboard");
-
-      // First clear auth data to ensure clean logout
-      deleteCookie("token", { path: "/" });
-      localStorage.removeItem("auth_token");
-      localStorage.removeItem("user_data");
-      delete axios.defaults.headers.common["Authorization"];
-
-      // Then call the context logout function which will handle redirection
-      if (typeof authLogout === "function") {
-        authLogout();
-      } else {
-        // Fallback if context logout is not available
-        window.location.replace("/login?logged_out=true");
+      // Set security tips
+      const tips = [];
+      if (!user.twoFactorEnabled) {
+        tips.push({
+          text: "Enable two-factor authentication for enhanced security",
+          link: "/settings/security/two-factor",
+          linkText: "Enable 2FA"
+        });
       }
-    } catch (error) {
-      console.error("Error during logout:", error);
-      // Ensure we redirect even if there's an error
-      window.location.replace("/login?logged_out=true");
+      if (!user.passwordUpdatedAt || new Date(user.passwordUpdatedAt) < new Date(Date.now() - 90 * 24 * 60 * 60 * 1000)) {
+        tips.push({
+          text: "Change your password regularly (at least every 90 days)",
+          link: "/settings/security/password",
+          linkText: "Change Password"
+        });
+      }
+      setSecurityTips(tips);
     }
+  }, [user]);
+
+  const getScoreColor = () => {
+    if (securityScore >= 80) return "text-green-500";
+    if (securityScore >= 60) return "text-yellow-500";
+    return "text-red-500";
   };
 
-  // Add a function to handle register navigation
-  const handleRegisterNavigation = (e) => {
-    e.preventDefault();
-    // Navigate to register with explicit flags indicating admin action
-    window.location.href =
-      "/register?from=dashboard&admin_action=true&admin_user_creation=true";
-  };
-
-  // Show loading state
-  if (showLoading && !cachedUser) {
-    return (
-      <div className="min-h-screen flex justify-center items-center bg-gray-100">
-        <Head>
-          <title>Dashboard - Secure Auth System</title>
-        </Head>
-        <div className="text-lg text-gray-500">Loading user data...</div>
-      </div>
-    );
-  }
-
-  // Show error state
-  if (apiError) {
-    return (
-      <div className="min-h-screen flex flex-col justify-center items-center bg-gray-100 p-4">
-        <Head>
-          <title>Dashboard - Error</title>
-        </Head>
-        <button
-          onClick={handleLogout}
-          className="w-full mt-4 border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium py-2 px-4 rounded"
-        >
-          Return to Login
-        </button>
-      </div>
-    );
-  }
-
-  // Use cached user data if available while loading
-  const displayUser = user || cachedUser;
-
-  // No user data available - improved redirect logic
-  if (!displayUser) {
-    // Prevent render loop by only triggering the redirect once
-    if (!isRedirecting) {
-      setIsRedirecting(true);
-
-      // Immediate cleanup and redirect
-      setTimeout(() => {
-        // Clear any tokens that might be causing issues
-        deleteCookie("token", { path: "/" });
-        localStorage.removeItem("auth_token");
-        localStorage.removeItem("user_data");
-
-        // Direct navigation to login page with logged_out flag
-        window.location.href = "/login?logged_out=true";
-      }, 100);
-    }
-
-    // Show minimal loading UI while redirecting
-    return (
-      <div className="min-h-screen flex flex-col justify-center items-center bg-gray-100 p-4">
-        <Head>
-          <title>Redirecting...</title>
-        </Head>
-        <div className="text-lg text-gray-500">Redirecting to login...</div>
-      </div>
-    );
-  }
-
-  // User is authenticated, render dashboard
   return (
-    <Layout title="Dashboard">
-      <div className="bg-white shadow-sm rounded-lg p-6 mb-6">
-        <h1 className="text-2xl font-semibold text-gray-900 mb-2">
-          Welcome, {displayUser.name}!
-        </h1>
-        <p className="text-gray-600">
-          {new Date().toLocaleDateString("en-US", {
-            weekday: "long",
-            year: "numeric",
-            month: "long",
-            day: "numeric",
-          })}
-        </p>
-      </div>
-
-      <div className="bg-white overflow-hidden shadow rounded-lg p-6 mb-6">
-        <h2 className="text-lg font-medium text-gray-900 mb-4">
-          Your Account Information
-        </h2>
-        <p className="mb-2">
-          <span className="font-medium">Email:</span> {displayUser.email}
-        </p>
-        <p className="mb-2">
-          <span className="font-medium">Role:</span> {displayUser.role}
-        </p>
-        {displayUser.createdAt && (
-          <p className="mb-2">
-            <span className="font-medium">Account Created:</span>{" "}
-            {new Date(displayUser.createdAt).toLocaleDateString()}
-          </p>
-        )}
-
-        {displayUser.permissions && displayUser.permissions.length > 0 && (
-          <div className="mt-6">
-            <h3 className="text-base font-medium text-gray-900 mb-2">
-              Your Permissions:
-            </h3>
-            <div className="flex flex-wrap gap-2">
-              {displayUser.permissions.map((permission) => (
-                <span
-                  key={permission}
-                  className="px-2 py-1 bg-gray-100 rounded-full text-xs font-medium"
+    <Layout title="Dashboard" requireAuth={true}>
+      <div className="space-y-6">
+        <Card className="bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-xl">
+          <div className="flex items-center">
+            <div className="flex-1">
+              <h2 className="text-3xl font-bold mb-2">
+                {greeting}, {user?.name?.split(" ")[0] || "User"}!
+              </h2>
+              <p className="opacity-90">Welcome to your secure dashboard.</p>
+            </div>
+            <div className="hidden sm:block">
+              <div className="bg-white bg-opacity-20 rounded-full p-4">
+                <svg
+                  className="h-14 w-14 text-white"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
                 >
-                  {permission}
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="2"
+                    d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"
+                  />
+                </svg>
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <Card 
+            title="Account Status" 
+            className="transition-transform hover:translate-y-[-5px]"
+          >
+            <div className="space-y-4">
+              <div className="flex justify-between">
+                <span className="text-gray-500">Role:</span>
+                <span className="font-semibold capitalize">{user?.role || "User"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">2FA Status:</span>
+                <span
+                  className={`font-semibold ${
+                    user?.twoFactorEnabled ? "text-green-600" : "text-red-600"
+                  }`}
+                >
+                  {user?.twoFactorEnabled ? "Enabled" : "Disabled"}
                 </span>
-              ))}
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Last Login:</span>
+                <span className="font-semibold">
+                  {user?.lastLogin
+                    ? new Date(user.lastLogin).toLocaleString()
+                    : "N/A"}
+                </span>
+              </div>
+              <div className="pt-2">
+                <Button href="/profile" variant="secondary" size="sm">
+                  View Profile
+                </Button>
+              </div>
             </div>
+          </Card>
+
+          <Card 
+            title="Security Score" 
+            className="transition-transform hover:translate-y-[-5px]"
+          >
+            <div className="text-center mb-4">
+              <div className="inline-flex items-center justify-center h-24 w-24 rounded-full bg-gray-50 mb-4">
+                <span className={`text-3xl font-bold ${getScoreColor()}`}>
+                  {securityScore}%
+                </span>
+              </div>
+              <div className="h-2 w-full bg-gray-200 rounded-full overflow-hidden">
+                <div 
+                  className={`h-full ${
+                    securityScore >= 80 ? 'bg-green-500' : 
+                    securityScore >= 60 ? 'bg-yellow-500' : 
+                    'bg-red-500'
+                  }`}
+                  style={{ width: `${securityScore}%` }}
+                ></div>
+              </div>
+            </div>
+            
+            {securityScore < 100 && securityTips.length > 0 && (
+              <div className="mt-4">
+                <h4 className="text-sm font-medium text-gray-700 mb-2">Security Recommendations:</h4>
+                <ul className="space-y-2">
+                  {securityTips.map((tip, index) => (
+                    <li key={index} className="text-xs text-gray-600 flex justify-between items-center">
+                      <span>{tip.text}</span>
+                      <Button href={tip.link} variant="primary" size="xs">
+                        {tip.linkText}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            
+            {securityScore === 100 && (
+              <Alert type="success" message="Great job! Your account has excellent security." />
+            )}
+          </Card>
+
+          <Card 
+            title="Quick Actions" 
+            className="transition-transform hover:translate-y-[-5px]"
+          >
+            <div className="space-y-3">
+              <div>
+                <Button href="/settings/security" variant="primary" className="w-full mb-3">
+                  Security Settings
+                </Button>
+                
+                <Button href="/profile" variant="secondary" className="w-full mb-3">
+                  Update Profile
+                </Button>
+                
+                {user?.twoFactorEnabled ? (
+                  <Button href="/settings/security/two-factor" variant="secondary" className="w-full">
+                    Manage 2FA
+                  </Button>
+                ) : (
+                  <Button href="/settings/security/two-factor" variant="outline" className="w-full">
+                    Setup 2FA
+                  </Button>
+                )}
+              </div>
+            </div>
+          </Card>
+        </div>
+        
+        <Card
+          title="Recent Activity"
+          subtitle="Your account activity in the last 30 days"
+          footer={
+            <div className="text-right">
+              <Button variant="secondary" size="sm">
+                View All Activity
+              </Button>
+            </div>
+          }
+        >
+          <div className="overflow-hidden">
+            <ul className="divide-y divide-gray-200">
+              {user?.lastLogin && (
+                <li className="py-3 flex justify-between">
+                  <div className="flex items-center">
+                    <div className="bg-blue-100 rounded-full p-2 mr-3">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-blue-600" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M3 3a1 1 0 011-1h12a1 1 0 011 1v3a1 1 0 01-.293.707L12 11.414V15a1 1 0 01-.293.707l-2 2A1 1 0 018 17v-5.586L3.293 6.707A1 1 0 013 6V3z" clipRule="evenodd" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Successful login</p>
+                      <p className="text-xs text-gray-500">From IP: {user.lastLoginIP || 'Unknown'}</p>
+                    </div>
+                  </div>
+                  <div className="text-sm text-gray-500">
+                    {new Date(user.lastLogin).toLocaleDateString()}
+                  </div>
+                </li>
+              )}
+              
+              {user?.passwordUpdatedAt && (
+                <li className="py-3 flex justify-between">
+                  <div className="flex items-center">
+                    <div className="bg-green-100 rounded-full p-2 mr-3">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-green-600" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Password updated</p>
+                      <p className="text-xs text-gray-500">Updated by you</p>
+                    </div>
+                  </div>
+                  <div className="text-sm text-gray-500">
+                    {new Date(user.passwordUpdatedAt).toLocaleDateString()}
+                  </div>
+                </li>
+              )}
+              
+              {(!user?.lastLogin && !user?.passwordUpdatedAt) && (
+                <li className="py-4 text-center text-gray-500">
+                  No recent activity to display
+                </li>
+              )}
+            </ul>
           </div>
-        )}
+        </Card>
       </div>
-
-      {displayUser.role &&
-        (displayUser.role === "admin" || displayUser.role === "superadmin") && (
-          <div className="bg-white overflow-hidden shadow rounded-lg p-6 mb-6">
-            <h2 className="text-lg font-medium text-gray-900 mb-4">
-              Admin Actions
-            </h2>
-            <p className="text-gray-600 mb-4">
-              You have administrative privileges. You can manage users and
-              system settings.
-            </p>
-            <div className="flex flex-wrap gap-4">
-              <Link href="/admin">
-                <button className="bg-primary-600 hover:bg-primary-700 text-white font-medium py-2 px-4 rounded focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500">
-                  Go to Admin Dashboard
-                </button>
-              </Link>
-
-              {/* Update the register button with better labeling for clarity */}
-              <button
-                onClick={handleRegisterNavigation}
-                className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
-              >
-                Create New User
-              </button>
-            </div>
-          </div>
-        )}
     </Layout>
   );
-}
+};
+
+export default Dashboard;

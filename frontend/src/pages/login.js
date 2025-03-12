@@ -4,13 +4,16 @@ import { useRouter } from "next/router";
 import { useAuth } from "../context/AuthContext";
 import Layout from "../components/Layout";
 import TwoFactorAuthentication from "../components/TwoFactorAuthentication";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
+import Alert from "../components/ui/Alert";
 
 const Login = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [localError, setLocalError] = useState("");
-  const { login, error, requiresTwoFactor } = useAuth();
+  const { login, error, requiresTwoFactor, user } = useAuth();
   const router = useRouter();
 
   // Clear local error when global error changes
@@ -26,28 +29,62 @@ const Login = () => {
       setLocalError("You have been logged out.");
       setTimeout(() => setLocalError(""), 3000);
     }
-  }, [router.query]);
+
+    if (router.query.expired) {
+      setLocalError("Your session has expired. Please log in again.");
+      setTimeout(() => setLocalError(""), 3000);
+    }
+
+    // If user is already authenticated, redirect to dashboard
+    // This helps prevent redirect loops when middleware might not catch it
+    if (user) {
+      console.log("User already logged in, redirecting to dashboard");
+      router.push("/dashboard?no_redirect=true");
+    }
+  }, [router.query, user, router]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
     setLocalError("");
 
+    console.log(`[Login] Attempting login for ${email}`);
+
     try {
       const result = await login({ email, password });
+      console.log("[Login] Login result:", result);
 
       // If two-factor auth is required, the component will be shown
       if (result?.requireTwoFactor) {
+        console.log("[Login] Two-factor authentication required");
         // Don't reset the form or redirect, the 2FA component will handle that
-        console.log("Two-factor authentication required");
+      } else {
+        console.log(
+          "[Login] Login successful, redirect should happen automatically"
+        );
+        // The login function will handle the redirect
       }
     } catch (error) {
-      console.error("Login error:", error);
+      console.error("[Login] Login error:", error);
       setLocalError(
         error.response?.data?.error || "Login failed. Please try again."
       );
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  // Clear form errors if user edits fields
+  const handleInputChange = (e) => {
+    if (localError) {
+      setLocalError("");
+    }
+
+    // Update the respective field
+    if (e.target.name === "email") {
+      setEmail(e.target.value);
+    } else if (e.target.name === "password") {
+      setPassword(e.target.value);
     }
   };
 
@@ -62,72 +99,52 @@ const Login = () => {
 
   return (
     <Layout requireAuth={false} title="Login">
-      <div className="flex min-h-full items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
-        <div className="w-full max-w-md space-y-8">
+      <Card className="max-w-md mx-auto slide-in" bodyClassName="px-6 py-8">
+        <div className="mb-6">
+          <h2 className="text-center text-3xl font-extrabold text-gray-900 mb-4">
+            Sign in to your account
+          </h2>
+          <p className="text-center text-sm text-gray-600">
+            Or{" "}
+            <Link
+              href="/register"
+              className="font-medium text-indigo-600 hover:text-indigo-500"
+            >
+              create a new account
+            </Link>
+          </p>
+        </div>
+
+        {localError && (
+          <Alert
+            type="error"
+            message={localError}
+            onClose={() => setLocalError("")}
+          />
+        )}
+
+        <form className="space-y-6" onSubmit={handleSubmit}>
           <div>
-            <h2 className="mt-6 text-center text-3xl font-bold tracking-tight text-gray-900">
-              Sign in to your account
-            </h2>
-            <p className="mt-2 text-center text-sm text-gray-600">
-              Or{" "}
-              <Link
-                href="/register"
-                className="font-medium text-indigo-600 hover:text-indigo-500"
-              >
-                create a new account
-              </Link>
-            </p>
+            <label htmlFor="email" className="form-label">
+              Email address
+            </label>
+            <input
+              id="email"
+              name="email"
+              type="email"
+              autoComplete="email"
+              required
+              className="form-input"
+              value={email}
+              onChange={handleInputChange}
+            />
           </div>
 
-          <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
-            <div className="-space-y-px rounded-md shadow-sm">
-              <div>
-                <label htmlFor="email-address" className="sr-only">
-                  Email address
-                </label>
-                <input
-                  id="email-address"
-                  name="email"
-                  type="email"
-                  autoComplete="email"
-                  required
-                  className="relative block w-full appearance-none rounded-none rounded-t-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-500 focus:z-10 focus:border-indigo-500 focus:outline-none focus:ring-indigo-500 sm:text-sm"
-                  placeholder="Email address"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                />
-              </div>
-              <div>
-                <label htmlFor="password" className="sr-only">
-                  Password
-                </label>
-                <input
-                  id="password"
-                  name="password"
-                  type="password"
-                  autoComplete="current-password"
-                  required
-                  className="relative block w-full appearance-none rounded-none rounded-b-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-500 focus:z-10 focus:border-indigo-500 focus:outline-none focus:ring-indigo-500 sm:text-sm"
-                  placeholder="Password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-              </div>
-            </div>
-
-            {localError && (
-              <div className="rounded-md bg-red-50 p-4">
-                <div className="flex">
-                  <div className="ml-3">
-                    <h3 className="text-sm font-medium text-red-800">
-                      {localError}
-                    </h3>
-                  </div>
-                </div>
-              </div>
-            )}
-
+          <div>
             <div className="flex items-center justify-between">
+              <label htmlFor="password" className="form-label">
+                Password
+              </label>
               <div className="text-sm">
                 <Link
                   href="/forgot-password"
@@ -137,24 +154,30 @@ const Login = () => {
                 </Link>
               </div>
             </div>
+            <input
+              id="password"
+              name="password"
+              type="password"
+              autoComplete="current-password"
+              required
+              className="form-input"
+              value={password}
+              onChange={handleInputChange}
+            />
+          </div>
 
-            <div>
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className={`group relative flex w-full justify-center rounded-md border border-transparent py-2 px-4 text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 
-                ${
-                  isSubmitting
-                    ? "bg-indigo-400 cursor-not-allowed"
-                    : "bg-indigo-600 hover:bg-indigo-700"
-                }`}
-              >
-                {isSubmitting ? "Signing in..." : "Sign in"}
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
+          <div>
+            <Button
+              type="submit"
+              variant="primary"
+              className="w-full"
+              isLoading={isSubmitting}
+            >
+              Sign in
+            </Button>
+          </div>
+        </form>
+      </Card>
     </Layout>
   );
 };

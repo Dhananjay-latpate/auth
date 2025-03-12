@@ -9,6 +9,8 @@ exports.protect = asyncHandler(async (req, res, next) => {
   let token;
   let tokenSource = "none";
 
+  console.log("[Auth] User: Not authenticated, Path:", req.path);
+
   if (
     req.headers.authorization &&
     req.headers.authorization.startsWith("Bearer")
@@ -42,7 +44,12 @@ exports.protect = asyncHandler(async (req, res, next) => {
     }
 
     // Verify token
+    console.log("Token from Authorization header:", token);
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    console.log(
+      "Token from Authorization header decoded successfully:",
+      decoded
+    );
 
     // Log token verification
     authDebug.logTokenVerification(decoded, tokenSource);
@@ -53,6 +60,23 @@ exports.protect = asyncHandler(async (req, res, next) => {
     if (!user) {
       console.log("User not found for id:", decoded.id);
       return next(new ErrorResponse("User no longer exists", 401));
+    }
+
+    // If token is older than password update, invalidate it
+    if (
+      user.passwordUpdatedAt &&
+      decoded.iat < user.passwordUpdatedAt.getTime() / 1000
+    ) {
+      return next(
+        new ErrorResponse("Password has been changed, please log in again", 401)
+      );
+    }
+
+    // If user is locked, deny access
+    if (user.isLocked) {
+      return next(
+        new ErrorResponse("Account locked. Please contact support.", 403)
+      );
     }
 
     if (!user.active) {
@@ -70,6 +94,11 @@ exports.protect = asyncHandler(async (req, res, next) => {
     ) {
       req.isAdminCreatingUser = true;
       console.log("Admin creating user detected");
+    }
+
+    // For /me endpoint, get the full user data
+    if (req.path === "/api/v1/auth/me" || req.path === "/me") {
+      console.log("Getting user data for:", user.name);
     }
 
     next();
@@ -113,38 +142,28 @@ exports.authorize = (...roles) => {
   };
 };
 
-// Check for specific permissions
-exports.checkPermission = (permission) => {
-  return asyncHandler(async (req, res, next) => {
-    // Make sure req.user exists
+// Check if user has specific permission
+exports.hasPermission = (permission) => {
+  return (req, res, next) => {
     if (!req.user) {
-      return next(new ErrorResponse("User not authenticated", 401));
+      return next(
+        new ErrorResponse("Not authorized to access this route", 401)
+      );
     }
 
-    // Log for debugging
-    console.log(`Checking permission: ${permission} for user:`, req.user.name);
-
-    // Admin and superadmin have all permissions
-    if (["admin", "superadmin"].includes(req.user.role)) {
-      console.log("User has admin/superadmin role, granting permission");
+    // Super admin and admin have all permissions
+    if (["superadmin", "admin"].includes(req.user.role)) {
       return next();
     }
 
-    // Check if user has the required permission
     if (!req.user.permissions || !req.user.permissions.includes(permission)) {
-      console.log("User does not have required permission");
       return next(
         new ErrorResponse(
-          `User does not have the ${permission} permission to access this route`,
+          `User doesn't have permission to perform this action`,
           403
         )
       );
     }
-
-    // Log permission check with failure
-    authDebug.logPermissionCheck(permission, req.user, false);
-
-    console.log("Permission granted");
     next();
-  });
+  };
 };
