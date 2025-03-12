@@ -19,6 +19,11 @@ node_modules/
 .vercel
 next-env.d.ts
 
+# Next.js - explicitly ignore frontend/.next directory
+frontend/.next
+frontend/.next/
+frontend/.next/**/*
+
 # Production build
 /build
 /dist
