@@ -15,6 +15,33 @@ const setupAxiosDefaults = (token) => {
   }
 };
 
+// Add centralized error handling
+const handleError = (error) => {
+  const message = error.response?.data?.error || "An error occurred";
+  setError(message);
+  setTimeout(() => setError(null), 5000);
+  return message;
+};
+
+// Update token storage to use only cookies
+const storeAuthToken = (token) => {
+  if (!token) return;
+
+  setCookie("token", token.trim(), {
+    maxAge: 30 * 24 * 60 * 60,
+    path: "/",
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+  });
+
+  setupAxiosDefaults(token.trim());
+};
+
+const clearAuthToken = () => {
+  deleteCookie("token", { path: "/" });
+  delete axios.defaults.headers.common["Authorization"];
+};
+
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -91,7 +118,7 @@ export const AuthProvider = ({ children }) => {
     }, 55 * 60 * 1000);
   };
 
-  // Register user
+  // Register user with improved error handling
   const register = async (userData) => {
     try {
       const res = await axios.post(
@@ -109,133 +136,110 @@ export const AuthProvider = ({ children }) => {
         setupTokenRefresh();
         router.push("/dashboard");
       }
+
+      return res.data;
     } catch (error) {
-      setError(
-        error.response?.data?.error || "An error occurred during registration"
-      );
+      console.error("Registration error:", error);
+
+      // Format meaningful error message based on error type
+      let errorMessage = "Registration failed. Please try again later.";
+
+      // Handle specific error types
+      if (error.response) {
+        const { status, data } = error.response;
+
+        // Handle duplicate email (409 Conflict or code 11000)
+        if (status === 409 || data?.code === 11000) {
+          errorMessage =
+            data?.error ||
+            "This email is already registered. Please try logging in instead.";
+        }
+        // Handle validation errors
+        else if (data?.validationError) {
+          errorMessage =
+            data.error || "Please check your information and try again.";
+        }
+        // Handle other API errors with messages
+        else if (data?.error) {
+          errorMessage = data.error;
+        }
+        // Handle other status codes
+        else if (status === 400) {
+          errorMessage =
+            "Invalid input. Please check your information and try again.";
+        } else if (status === 500) {
+          errorMessage = "Server error. Please try again later.";
+        }
+      }
+
+      // Update global error state
+      setError(errorMessage);
+
+      // Clear error after timeout
       setTimeout(() => setError(null), 5000);
+
+      // Re-throw for component-level handling
+      throw error;
     }
   };
 
   // Login user
   const login = async ({ email, password }) => {
     try {
-      console.log("Attempting login with:", { email });
-
-      // Clear previous tokens to avoid redirect loops
-      deleteCookie("token", { path: "/" });
+      // Clear any existing auth state
+      clearAuthToken();
       localStorage.removeItem("auth_token");
-      localStorage.removeItem("user_data");
-      localStorage.removeItem("isLoggingOut");
-      delete axios.defaults.headers.common["Authorization"];
+      sessionStorage.clear();
 
       const res = await axios.post(
         `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/login`,
-        { email, password },
-        { withCredentials: true }
+        { email, password }
       );
 
-      console.log("Login response:", res.data);
-
-      // Check if 2FA is required
-      if (res.data.requireTwoFactor) {
-        router.push({
-          pathname: "/login/verify-2fa",
-          query: { email },
-        });
-        return;
-      }
-
       if (res.data.success && res.data.token) {
-        const token = res.data.token.trim();
-        // Store token in localStorage and cookie
-        localStorage.setItem("auth_token", token);
-        setCookie("token", token, {
-          maxAge: 30 * 24 * 60 * 60,
-          path: "/",
-        });
+        console.log("[Auth] Login successful, setting token");
+        storeAuthToken(res.data.token);
 
-        setupAxiosDefaults(token);
-
-        console.log("Token set in cookie and localStorage");
-
-        if (res.data.user) {
-          setUser(res.data.user);
-          localStorage.setItem("user_data", JSON.stringify(res.data.user));
-        }
-
-        // Fetch fresh user data
-        await checkUserLoggedIn();
-        setupTokenRefresh();
-
-        // Redirect to dashboard (using full reload to clear middleware if needed)
-        window.location.href = "/dashboard";
+        // Use very explicit no_redirect to bypass all checks
+        window.location.replace("/dashboard?no_redirect=true");
         return res.data;
       }
-
-      return res.data;
+      return null;
     } catch (error) {
-      console.error("Login error:", error);
-      setError(error.response?.data?.error || "Invalid credentials");
-      setTimeout(() => setError(null), 5000);
+      handleError(error);
       throw error;
     }
   };
 
-  // Logout user
+  // Update logout function
   const logout = async () => {
     try {
-      console.log("AuthContext logout called");
-
-      // Flag to prevent multiple logout attempts
-      localStorage.setItem("isLoggingOut", "true");
-
-      // Clear all tokens and state FIRST
-      const token = getCookie("token") || localStorage.getItem("auth_token");
+      const token = getCookie("token");
+      clearAuthToken();
       setUser(null);
-      deleteCookie("token", { path: "/" });
-      localStorage.removeItem("auth_token");
-      localStorage.removeItem("user_data");
-      delete axios.defaults.headers.common["Authorization"];
 
-      // Clear token refresh interval
       if (tokenRefreshIntervalRef.current) {
         clearInterval(tokenRefreshIntervalRef.current);
-        tokenRefreshIntervalRef.current = null;
       }
 
-      // Call the API to logout - don't wait for it
+      // Call logout API (non-blocking)
       if (token) {
-        try {
-          fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/logout`, {
-            method: "GET",
-            headers: { Authorization: `Bearer ${token}` },
-          }).catch((e) => console.log("Logout API error (non-critical):", e));
-        } catch (apiError) {
-          console.log("Logout API call error (non-critical):", apiError);
-        }
-      }
-
-      // Force hard redirect to login page with logged_out flag and timestamp
-      const timestamp = Date.now();
-
-      // Clear the logging out flag right before redirecting
-      localStorage.removeItem("isLoggingOut");
-
-      // Use replace to create a clean navigation history
-      if (typeof window !== "undefined") {
-        window.location.replace(`/login?logged_out=true&t=${timestamp}`);
+        await axios.get(
+          `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/logout`
+        );
       }
     } catch (error) {
-      console.error("Logout process error:", error);
-      // Fallback redirect if something went wrong
+      handleError(error);
+    } finally {
       window.location.replace("/login?logged_out=true");
     }
   };
 
   // Check if user is logged in with concurrency handling using a stored promise
   const checkUserLoggedIn = async () => {
+    console.log("[Auth] Checking login state");
     if (authPromiseRef.current) {
+      console.log("[Auth] Auth check already in progress");
       return authPromiseRef.current;
     }
 

@@ -12,38 +12,126 @@ export default function Register() {
     watch,
     formState: { errors },
   } = useForm();
+
   const [isLoading, setIsLoading] = useState(false);
-  const { register: registerUser, error, user } = useAuth();
+  const [error, setError] = useState(null);
+  const [success, setSuccess] = useState(null);
   const router = useRouter();
-  const { new_account } = router.query;
+  const auth = useAuth();
+  const password = watch("password", "");
 
-  const password = watch("password");
+  // Track if this is an admin creating a new user
+  const [isAdminAction, setIsAdminAction] = useState(false);
 
-  // If user is logged in and not explicitly trying to create a new account, redirect to dashboard
+  // Check if this is an admin creating a new user when router is ready
   useEffect(() => {
-    if (user && !new_account) {
-      router.push("/dashboard");
-    }
-  }, [user, new_account, router]);
+    if (router.isReady) {
+      const fromDashboard = router.query.from === "dashboard";
+      const adminAction = router.query.admin_action === "true";
 
+      if (fromDashboard && adminAction) {
+        setIsAdminAction(true);
+        console.log("Admin user creation page detected");
+      } else if (auth.user && !isAdminAction) {
+        // If user is already logged in and not performing admin action,
+        // redirect to dashboard
+        router.push("/dashboard");
+      }
+    }
+  }, [router.isReady, router.query]);
+
+  // Handle form submission
   const onSubmit = async (data) => {
     setIsLoading(true);
-    await registerUser(data);
-    setIsLoading(false);
+    setError(null);
+
+    try {
+      // Remove confirmPassword before sending to API
+      const { confirmPassword, ...registrationData } = data;
+
+      // If this is admin action, add flag for backend
+      if (isAdminAction) {
+        registrationData.createdByAdmin = true;
+      }
+
+      await auth.register(registrationData);
+
+      // If admin is creating a user, show success and don't redirect
+      if (isAdminAction) {
+        setSuccess(`User ${data.name} has been created successfully!`);
+        setTimeout(() => {
+          router.push("/dashboard");
+        }, 2000);
+      }
+    } catch (err) {
+      console.error("Registration error:", err);
+
+      // Handle specific error types
+      if (err.response?.status === 409 || err.response?.data?.code === 11000) {
+        setError(
+          "This email is already registered. Please try using a different email address."
+        );
+
+        // Highlight the email field
+        document.getElementById("email")?.classList.add("border-red-500");
+      } else if (err.response?.data?.validationError) {
+        setError(
+          err.response.data.error ||
+            "Please check your information and try again."
+        );
+      } else if (err.response?.data?.error) {
+        setError(err.response.data.error);
+      } else {
+        setError("Registration failed. Please try again later.");
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Reset error when user types in email field
+  const handleEmailFocus = () => {
+    document.getElementById("email")?.classList.remove("border-red-500");
+    if (error && error.includes("email is already registered")) {
+      setError(null);
+    }
   };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100 py-12 px-4 sm:px-6 lg:px-8">
       <Head>
-        <title>Register - Secure Auth System</title>
+        <title>
+          {isAdminAction ? "Create New User" : "Register"} - Secure Auth System
+        </title>
       </Head>
 
       <div className="max-w-md w-full bg-white p-8 rounded-lg shadow-md">
-        <h1 className="text-center text-2xl font-bold text-gray-900 mb-6">
-          {new_account && user ? "Register New User" : "Create an Account"}
-        </h1>
+        {isAdminAction ? (
+          <div className="mb-6">
+            <h1 className="text-center text-2xl font-bold text-gray-900">
+              Create New User
+            </h1>
+            <p className="mt-2 text-center text-sm text-gray-600">
+              You are creating a user as an administrator
+            </p>
+          </div>
+        ) : (
+          <h1 className="text-center text-2xl font-bold text-gray-900 mb-6">
+            Create Your Account
+          </h1>
+        )}
 
-        {error && <div className="alert alert-error">{error}</div>}
+        {error && (
+          <div className="bg-red-50 border border-red-200 text-red-800 p-4 mb-4 rounded-md">
+            {error}
+          </div>
+        )}
+
+        {success && (
+          <div className="bg-green-50 border border-green-200 text-green-800 p-4 mb-4 rounded-md">
+            {success}
+          </div>
+        )}
 
         <form onSubmit={handleSubmit(onSubmit)}>
           <div className="form-group">
@@ -58,12 +146,12 @@ export default function Register() {
               type="text"
               {...register("name", {
                 required: "Name is required",
-                maxLength: {
-                  value: 50,
-                  message: "Name cannot be more than 50 characters",
+                minLength: {
+                  value: 2,
+                  message: "Name must be at least 2 characters",
                 },
               })}
-              className={`form-control ${errors.name ? "is-invalid" : ""}`}
+              className="form-control"
             />
             {errors.name && (
               <span className="error-message">{errors.name.message}</span>
@@ -87,7 +175,8 @@ export default function Register() {
                   message: "Please enter a valid email",
                 },
               })}
-              className={`form-control ${errors.email ? "is-invalid" : ""}`}
+              onFocus={handleEmailFocus}
+              className="form-control"
             />
             {errors.email && (
               <span className="error-message">{errors.email.message}</span>
@@ -110,14 +199,8 @@ export default function Register() {
                   value: 8,
                   message: "Password must be at least 8 characters",
                 },
-                pattern: {
-                  value:
-                    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/,
-                  message:
-                    "Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character",
-                },
               })}
-              className={`form-control ${errors.password ? "is-invalid" : ""}`}
+              className="form-control"
             />
             {errors.password && (
               <span className="error-message">{errors.password.message}</span>
@@ -139,9 +222,7 @@ export default function Register() {
                 validate: (value) =>
                   value === password || "Passwords do not match",
               })}
-              className={`form-control ${
-                errors.confirmPassword ? "is-invalid" : ""
-              }`}
+              className="form-control"
             />
             {errors.confirmPassword && (
               <span className="error-message">
@@ -150,23 +231,42 @@ export default function Register() {
             )}
           </div>
 
-          <button
-            type="submit"
-            className="btn btn-primary"
-            disabled={isLoading}
-          >
-            {isLoading ? "Registering..." : "Register"}
-          </button>
+          <div className="mt-6">
+            <button
+              type="submit"
+              className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+              disabled={isLoading}
+            >
+              {isLoading
+                ? "Processing..."
+                : isAdminAction
+                ? "Create User"
+                : "Register"}
+            </button>
+          </div>
         </form>
 
-        <p className="mt-6 text-center text-sm text-gray-600">
-          Already have an account?{" "}
-          <Link href="/login">
-            <span className="font-medium text-primary-600 hover:text-primary-500 cursor-pointer">
-              Login
-            </span>
-          </Link>
-        </p>
+        {!isAdminAction && (
+          <p className="mt-6 text-center text-sm text-gray-600">
+            Already have an account?{" "}
+            <Link href="/login">
+              <span className="font-medium text-primary-600 hover:text-primary-500 cursor-pointer">
+                Login
+              </span>
+            </Link>
+          </p>
+        )}
+
+        {isAdminAction && (
+          <div className="mt-4 flex justify-center">
+            <button
+              onClick={() => router.push("/dashboard")}
+              className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+            >
+              ← Return to Dashboard
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

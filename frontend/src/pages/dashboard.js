@@ -120,6 +120,29 @@ export default function Dashboard() {
     };
   }, [checkUserLoggedIn, isRedirecting, user]);
 
+  // Force token refresh on suspicious auth state
+  useEffect(() => {
+    if (isRedirecting || !user) return;
+
+    const refreshAuth = async () => {
+      try {
+        const result = await checkUserLoggedIn();
+        if (!result) {
+          // Force token clearing and login redirect
+          window.location.href = "/login?clear=true&bypass=true";
+        }
+      } catch (err) {
+        console.error("Auth refresh failed:", err);
+        window.location.href = "/login?clear=true&bypass=true";
+      }
+    };
+
+    const token = getCookie("token");
+    if (!token) {
+      refreshAuth();
+    }
+  }, [isRedirecting, user]);
+
   // Don't show loading state if we have cached user data
   const showLoading = loading || initialLoad;
   const cachedUser =
@@ -153,6 +176,14 @@ export default function Dashboard() {
       // Ensure we redirect even if there's an error
       window.location.replace("/login?logged_out=true");
     }
+  };
+
+  // Add a function to handle register navigation
+  const handleRegisterNavigation = (e) => {
+    e.preventDefault();
+    // Navigate to register with explicit flags indicating admin action
+    window.location.href =
+      "/register?from=dashboard&admin_action=true&admin_user_creation=true";
   };
 
   // Show loading state
@@ -279,11 +310,21 @@ export default function Dashboard() {
               You have administrative privileges. You can manage users and
               system settings.
             </p>
-            <Link href="/admin">
-              <button className="bg-primary-600 hover:bg-primary-700 text-white font-medium py-2 px-4 rounded focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500">
-                Go to Admin Dashboard
+            <div className="flex flex-wrap gap-4">
+              <Link href="/admin">
+                <button className="bg-primary-600 hover:bg-primary-700 text-white font-medium py-2 px-4 rounded focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500">
+                  Go to Admin Dashboard
+                </button>
+              </Link>
+
+              {/* Update the register button with better labeling for clarity */}
+              <button
+                onClick={handleRegisterNavigation}
+                className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+              >
+                Create New User
               </button>
-            </Link>
+            </div>
           </div>
         )}
     </Layout>

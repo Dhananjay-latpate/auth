@@ -15,7 +15,7 @@ const {
   generateRecoveryCodes,
   verifyRecoveryCode,
   refreshToken,
-} = require("../controllers/auth");
+} = require("../controllers/auth/authController");
 
 const router = express.Router();
 

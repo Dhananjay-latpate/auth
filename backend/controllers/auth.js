@@ -5,84 +5,171 @@ const crypto = require("crypto");
 // Change this import to use the improved TOTP implementation
 const twoFactor = require("../utils/twoFactorImproved");
 const sendEmail = require("../utils/sendEmail");
+const jwt = require("jsonwebtoken");
 
 // @desc      Register user
 // @route     POST /api/v1/auth/register
 // @access    Public
-exports.register = asyncHandler(async (req, res, next) => {
-  const { name, email, password, role } = req.body;
 
-  // Create user
-  const user = await User.create({
-    name,
-    email,
-    password,
-    role: role || "user",
-  });
+exports.register = async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
 
-  sendTokenResponse(user, 201, res);
-});
-
-// @desc      Login user
-// @route     POST /api/v1/auth/login
-// @access    Public
-exports.login = asyncHandler(async (req, res, next) => {
-  const { email, password } = req.body;
-
-  // Validate email & password
-  if (!email || !password) {
-    return next(new ErrorResponse("Please provide an email and password", 400));
-  }
-
-  // Check for user
-  const user = await User.findOne({ email }).select("+password");
-
-  if (!user) {
-    return next(new ErrorResponse("Invalid credentials", 401));
-  }
-
-  // Check if account is locked
-  if (user.locked) {
-    return next(
-      new ErrorResponse(
-        "Account locked due to too many failed login attempts. Please contact support.",
-        401
-      )
-    );
-  }
-
-  // Check if password matches
-  const isMatch = await user.matchPassword(password);
-
-  if (!isMatch) {
-    // Increment login attempts
-    user.loginAttempts += 1;
-
-    // Lock account after 5 failed attempts
-    if (user.loginAttempts >= 5) {
-      user.locked = true;
+    // Validate input
+    if (!name || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: "Please provide all required fields",
+      });
     }
 
-    await user.save();
+    // Check if user already exists - case insensitive search to prevent duplicates with different case
+    const existingUser = await User.findOne({
+      email: { $regex: new RegExp(`^${email}$`, "i") },
+    });
+    if (existingUser) {
+      console.log(`Registration attempted with existing email: ${email}`);
+      return res.status(409).json({
+        success: false,
+        error: "This email address is already registered",
+        code: 11000,
+        field: "email",
+      });
+    }
 
-    return next(new ErrorResponse("Invalid credentials", 401));
-  }
+    // Create new user
+    const user = await User.create({
+      name,
+      email,
+      password,
+      role: "user", // Default role
+    });
 
-  // Reset login attempts on successful login
-  user.loginAttempts = 0;
-  user.lastLogin = Date.now();
-  await user.save();
+    // Generate and send token
+    const token = generateToken(user._id);
 
-  // Check if 2FA is enabled
-  if (user.twoFactorEnabled) {
-    return res.status(200).json({
+    res.status(201).json({
       success: true,
-      requireTwoFactor: true,
-      email: user.email,
+      token,
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      },
+    });
+  } catch (error) {
+    console.error("Registration error:", error);
+
+    // Handle MongoDB duplicate key error - this is a fallback if the initial check misses
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern)[0];
+      const value = error.keyValue[field];
+
+      return res.status(409).json({
+        success: false,
+        error: `An account with this ${field} (${value}) already exists`,
+        code: 11000,
+        field: field,
+      });
+    }
+
+    // Handle validation errors
+    if (error.name === "ValidationError") {
+      const messages = Object.values(error.errors).map((val) => val.message);
+      return res.status(400).json({
+        success: false,
+        error: messages.join(", "),
+        validationError: true,
+      });
+    }
+
+    // Handle other errors
+    res.status(500).json({
+      success: false,
+      error: "Server error during registration",
     });
   }
+};
 
-  sendTokenResponse(user, 200, res);
+// Send token response
+const sendTokenResponse = (user, statusCode, res) => {
+  try {
+    // Use either the model method or the fallback function
+    const token = user.getSignedJwtToken?.() || generateToken(user);
+
+    const options = {
+      expires: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+    };
+
+    res
+      .status(statusCode)
+      .cookie("token", token, options)
+      .json({
+        success: true,
+        token,
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          permissions: user.permissions || [],
+        },
+      });
+  } catch (error) {
+    console.error("Token generation error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Error generating authentication token",
+    });
+  }
+};
+
+// Modify login handler to prevent multiple token generations
+exports.login = asyncHandler(async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+
+    // Validate email & password
+    if (!email || !password) {
+      return next(
+        new ErrorResponse("Please provide an email and password", 400)
+      );
+    }
+
+    // Find user and include the password field
+    const user = await User.findOne({ email }).select("+password");
+
+    if (!user) {
+      return next(new ErrorResponse("Invalid credentials", 401));
+    }
+
+    // Check if password matches
+    const isMatch = await user.matchPassword(password);
+
+    if (!isMatch) {
+      return next(new ErrorResponse("Invalid credentials", 401));
+    }
+
+    // If 2FA is enabled, check if we need to verify
+    if (user.twoFactorEnabled) {
+      return res.status(200).json({
+        success: true,
+        requireTwoFactor: true,
+        email: user.email,
+      });
+    }
+
+    console.log(`User logged in: ${user.name}, role: ${user.role}`);
+
+    // Send token response
+    sendTokenResponse(user, 200, res);
+  } catch (error) {
+    console.error("Login error:", error);
+    return next(new ErrorResponse("Error during login process", 500));
+  }
 });
 
 // @desc      Log user out / clear cookie
@@ -471,42 +558,36 @@ exports.verifyRecoveryCode = asyncHandler(async (req, res, next) => {
   sendTokenResponse(user, 200, res);
 });
 
-// Get token from model, create cookie and send response
-const sendTokenResponse = (user, statusCode, res) => {
-  // Create token
-  const token = user.getSignedJwtToken();
+// @desc    Register user
+// @route   POST /api/v1/auth/register
+// @access  Public
+exports.register = asyncHandler(async (req, res, next) => {
+  const { name, email, password, role, createdByAdmin } = req.body;
 
-  console.log(`Generated token for user: ${user.name}, role: ${user.role}`);
+  // Check if this registration is being done by an admin
+  let userRole = "user"; // Default role
 
-  const options = {
-    expires: new Date(
-      Date.now() + process.env.JWT_COOKIE_EXPIRE * 24 * 60 * 60 * 1000
-    ),
-    httpOnly: true,
-    path: "/",
-    sameSite: "Lax", // Better cookie security but still allows redirects
-  };
-
-  if (process.env.NODE_ENV === "production") {
-    options.secure = true;
+  // If this is an admin-created user and the requester is an admin
+  if (
+    createdByAdmin &&
+    req.user &&
+    ["admin", "superadmin"].includes(req.user.role)
+  ) {
+    // Allow role specification for admin-created users
+    userRole = role || "user";
+    console.log(
+      `Admin ${req.user.name} is creating a new user with role: ${userRole}`
+    );
   }
 
-  // Remove any existing cookies first
-  res.clearCookie("token");
+  // Create user with appropriate role
+  const user = await User.create({
+    name,
+    email,
+    password,
+    role: userRole,
+    createdBy: req.user ? req.user._id : null, // Track who created this user
+  });
 
-  res
-    .status(statusCode)
-    .cookie("token", token, options)
-    .json({
-      success: true,
-      token,
-      // Include basic user info in the response
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        permissions: user.permissions,
-      },
-    });
-};
+  sendTokenResponse(user, 200, res);
+});

@@ -21,6 +21,20 @@ export default function Login() {
 
   // This useEffect ensures that previous auth state is properly cleaned up
   useEffect(() => {
+    console.log("[Login] Page mounted");
+    console.log("[Login] URL params:", router.query);
+
+    // Handle emergency token clearing
+    if (router.query.clear === "true") {
+      deleteCookie("token", { path: "/" });
+      localStorage.removeItem("auth_token");
+      localStorage.removeItem("user_data");
+      const url = new URL(window.location.href);
+      url.searchParams.delete("clear");
+      url.searchParams.set("bypass", "true");
+      window.history.replaceState({}, document.title, url.toString());
+    }
+
     // Clear any redirect state to prevent loops
     localStorage.removeItem("isLoggingOut");
 
@@ -41,6 +55,7 @@ export default function Login() {
           const url = new URL(window.location.href);
           url.searchParams.delete("logged_out");
           url.searchParams.delete("t");
+          url.searchParams.set("no_redirect", "true"); // Add flag to prevent redirect loops
           window.history.replaceState({}, document.title, url.toString());
         }, 500);
       }
@@ -54,10 +69,10 @@ export default function Login() {
         const directEntry =
           !document.referrer ||
           document.referrer.indexOf(window.location.host) === -1;
-        
+
         const hasTokenParam = router.query.t;
 
-        if ((cookieToken || localToken) && directEntry && hasTokenParam ) {
+        if ((cookieToken || localToken) && directEntry && hasTokenParam) {
           console.log(
             "Login page visited directly with tokens present, clearing stale tokens"
           );
@@ -75,7 +90,55 @@ export default function Login() {
     return () => {
       // No cleanup needed
     };
-  }, [logged_out]);
+  }, [logged_out, router.query.clear]);
+
+  useEffect(() => {
+    console.log("[Login] Page mounted");
+    console.log("[Login] URL params:", router.query);
+
+    if (router.query.force_clear === "true") {
+      console.log("[Login] Force clearing auth state");
+      deleteCookie("token", { path: "/" });
+      localStorage.removeItem("auth_token");
+      localStorage.removeItem("user_data");
+
+      // Clean up URL
+      const url = new URL(window.location.href);
+      url.searchParams.delete("force_clear");
+      url.searchParams.set("bypass_auth", "true");
+      console.log("[Login] Updating URL:", url.toString());
+      window.history.replaceState({}, document.title, url.toString());
+    }
+  }, [router.query.force_clear]);
+
+  useEffect(() => {
+    // Handle auth reset
+    if (router.query.reset === "true") {
+      console.log("[Login] Resetting auth state");
+      deleteCookie("token", { path: "/" });
+      localStorage.clear();
+
+      // Clean URL
+      const url = new URL(window.location.href);
+      url.searchParams.delete("reset");
+      url.searchParams.set("no_redirect", "true");
+      window.history.replaceState({}, document.title, url.toString());
+    }
+  }, [router.query.reset]);
+
+  useEffect(() => {
+    // Clear any existing auth state on mount
+    document.cookie = "route_history=; max-age=0; path=/;";
+
+    if (router.query.logged_out === "true") {
+      deleteCookie("token");
+      localStorage.clear();
+      const url = new URL(window.location.href);
+      url.searchParams.delete("logged_out");
+      url.searchParams.set("no_redirect", "true");
+      window.history.replaceState({}, document.title, url.toString());
+    }
+  }, []);
 
   const onSubmit = async (data) => {
     setIsLoading(true);
@@ -83,10 +146,21 @@ export default function Login() {
     setSuccessMessage(null);
 
     try {
-      // Call the login function from auth context
-      await auth.login(data);
-      // Direct navigation is now handled in the login function
+      const response = await auth.login(data);
+
+      if (response?.success && response?.token && response?.user) {
+        console.log("Login successful, preparing navigation");
+
+        // Add force_dashboard flag to ensure we get to dashboard
+        const dashboardUrl = new URL("/dashboard", window.location.href);
+        dashboardUrl.searchParams.set("force_dashboard", "true");
+
+        // Use window.location.replace for a clean navigation
+        window.location.replace(dashboardUrl.toString());
+        return;
+      }
     } catch (err) {
+      console.error("Login error:", err);
       setError(err?.response?.data?.error || "Login failed. Please try again.");
     } finally {
       setIsLoading(false);

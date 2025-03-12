@@ -2,14 +2,12 @@ const jwt = require("jsonwebtoken");
 const asyncHandler = require("./async");
 const ErrorResponse = require("../utils/errorResponse");
 const User = require("../models/User");
+const authDebug = require("../../utils/authDebug"); // Import our debug utility
 
 // Protect routes
 exports.protect = asyncHandler(async (req, res, next) => {
   let token;
-
-  // Debug headers
-  console.log("Authorization header:", req.headers.authorization);
-  console.log("Cookie token exists:", !!req.cookies.token);
+  let tokenSource = "none";
 
   if (
     req.headers.authorization &&
@@ -20,12 +18,16 @@ exports.protect = asyncHandler(async (req, res, next) => {
     const parts = req.headers.authorization.split(" ");
     if (parts.length >= 2) {
       token = parts[1].trim();
-      console.log("Using token from Authorization header");
+      tokenSource = "Authorization header";
+      console.log("Authorization header:", req.headers.authorization);
     }
   } else if (req.cookies && req.cookies.token) {
     // Set token from cookie
     token = req.cookies.token;
-    console.log("Using token from cookie");
+    tokenSource = "Cookie";
+    console.log("Cookie token exists:", true);
+  } else {
+    console.log("No authorization token found");
   }
 
   // Make sure token exists
@@ -42,7 +44,8 @@ exports.protect = asyncHandler(async (req, res, next) => {
     // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    console.log("Token decoded successfully:", decoded);
+    // Log token verification
+    authDebug.logTokenVerification(decoded, tokenSource);
 
     // Get user from database
     const user = await User.findById(decoded.id);
@@ -58,7 +61,16 @@ exports.protect = asyncHandler(async (req, res, next) => {
 
     // Add user info to request object
     req.user = user;
-    console.log("User attached to request:", req.user.name, req.user.role);
+    console.log(`User attached to request: ${user.name} ${user.role}`);
+
+    // Set a flag if this is an admin creating a user
+    if (
+      req.originalUrl.includes("/register") &&
+      ["admin", "superadmin"].includes(user.role)
+    ) {
+      req.isAdminCreatingUser = true;
+      console.log("Admin creating user detected");
+    }
 
     next();
   } catch (err) {
@@ -128,6 +140,9 @@ exports.checkPermission = (permission) => {
         )
       );
     }
+
+    // Log permission check with failure
+    authDebug.logPermissionCheck(permission, req.user, false);
 
     console.log("Permission granted");
     next();

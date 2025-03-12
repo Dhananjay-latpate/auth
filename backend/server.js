@@ -8,6 +8,8 @@ const mongoSanitize = require("express-mongo-sanitize");
 const cookieParser = require("cookie-parser");
 const connectDB = require("./config/db");
 const errorHandler = require("./middleware/error");
+const morgan = require("morgan");
+const logger = require("../middleware/logger"); // Import our new logger
 
 // Load env vars
 dotenv.config();
@@ -24,6 +26,11 @@ const app = express();
 
 // Body parser
 app.use(express.json());
+
+// Dev logging middleware
+if (process.env.NODE_ENV === "development") {
+  app.use(morgan("dev"));
+}
 
 // Cookie parser
 app.use(cookieParser());
@@ -64,6 +71,9 @@ const limiter = rateLimit({
   max: 100, // 100 requests per 10 mins
 });
 app.use("/api/", limiter);
+
+// Use auth logger middleware
+app.use(logger);
 
 // Mount routers
 app.use("/api/v1/auth", auth);
