@@ -1,267 +1,157 @@
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
+import { useRouter } from "next/router";
+import Layout from "../components/layout/Layout";
 import { useAuth } from "../context/AuthContext";
-import Layout from "../components/Layout";
-import Card from "../components/ui/Card";
-import Button from "../components/ui/Button";
-import Alert from "../components/ui/Alert";
+import { FaKey, FaUsers, FaShieldAlt, FaUser } from "react-icons/fa";
+
+const DashboardCard = ({ title, icon, description, linkText, linkHref, count }) => {
+  const router = useRouter();
+  
+  return (
+    <div className="bg-white shadow rounded-lg overflow-hidden">
+      <div className="p-5">
+        <div className="flex items-center">
+          <div className="p-3 rounded-full bg-blue-100 text-blue-600">
+            {icon}
+          </div>
+          <div className="ml-4">
+            <h3 className="text-lg font-medium text-gray-900">{title}</h3>
+            <p className="text-sm text-gray-500">{description}</p>
+          </div>
+          {count !== undefined && (
+            <div className="ml-auto">
+              <span className="bg-blue-50 text-blue-700 py-1 px-3 rounded-full font-medium text-sm">
+                {count}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="bg-gray-50 px-5 py-3">
+        <button 
+          onClick={() => router.push(linkHref)}
+          className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+        >
+          {linkText} &rarr;
+        </button>
+      </div>
+    </div>
+  );
+};
 
 const Dashboard = () => {
-  const { user } = useAuth();
-  const [greeting, setGreeting] = useState("");
-  const [securityScore, setSecurityScore] = useState(0);
-  const [securityTips, setSecurityTips] = useState([]);
-
+  const { user, loading, getUserOrganizations, getUserSessions, getUserApiKeys, checkUserLoggedIn } = useAuth();
+  const router = useRouter();
+  
+  // State for dashboard data
+  const [orgsCount, setOrgsCount] = useState(0);
+  const [sessionsCount, setSessionsCount] = useState(0);
+  const [apiKeysCount, setApiKeysCount] = useState(0);
+  const [dataLoading, setDataLoading] = useState(true);
+  
   useEffect(() => {
-    const hour = new Date().getHours();
-    let newGreeting;
-
-    if (hour < 12) {
-      newGreeting = "Good morning";
-    } else if (hour < 18) {
-      newGreeting = "Good afternoon";
-    } else {
-      newGreeting = "Good evening";
-    }
-
-    setGreeting(newGreeting);
-
-    // Calculate security score
-    if (user) {
-      let score = 50; // Base score
-      if (user.twoFactorEnabled) score += 30;
-      if (user.passwordUpdatedAt) {
-        // Check if password was updated in the last 90 days
-        const lastUpdate = new Date(user.passwordUpdatedAt);
-        const now = new Date();
-        const daysSinceUpdate = Math.floor((now - lastUpdate) / (1000 * 60 * 60 * 24));
-        if (daysSinceUpdate < 90) score += 20;
+    checkUserLoggedIn();
+  }, []);
+  
+  // Load dashboard data
+  useEffect(() => {
+    const loadDashboardData = async () => {
+      if (!user) return;
+      
+      setDataLoading(true);
+      try {
+        // Load organizations count
+        const orgsRes = await getUserOrganizations();
+        setOrgsCount(orgsRes.data?.length || 0);
+        
+        // Load active sessions
+        const sessionsRes = await getUserSessions();
+        setSessionsCount(sessionsRes.data?.length || 0);
+        
+        // Load API keys
+        const apiKeysRes = await getUserApiKeys();
+        setApiKeysCount(apiKeysRes.data?.length || 0);
+      } catch (err) {
+        console.error('Error loading dashboard data:', err);
+      } finally {
+        setDataLoading(false);
       }
-      setSecurityScore(Math.min(score, 100));
-
-      // Set security tips
-      const tips = [];
-      if (!user.twoFactorEnabled) {
-        tips.push({
-          text: "Enable two-factor authentication for enhanced security",
-          link: "/settings/security/two-factor",
-          linkText: "Enable 2FA"
-        });
-      }
-      if (!user.passwordUpdatedAt || new Date(user.passwordUpdatedAt) < new Date(Date.now() - 90 * 24 * 60 * 60 * 1000)) {
-        tips.push({
-          text: "Change your password regularly (at least every 90 days)",
-          link: "/settings/security/password",
-          linkText: "Change Password"
-        });
-      }
-      setSecurityTips(tips);
-    }
+    };
+    
+    loadDashboardData();
   }, [user]);
-
-  const getScoreColor = () => {
-    if (securityScore >= 80) return "text-green-500";
-    if (securityScore >= 60) return "text-yellow-500";
-    return "text-red-500";
-  };
-
+  
+  if (loading || !user) {
+    return (
+      <Layout>
+        <div className="flex justify-center items-center h-64">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+        </div>
+      </Layout>
+    );
+  }
+  
   return (
-    <Layout title="Dashboard" requireAuth={true}>
-      <div className="space-y-6">
-        <Card className="bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-xl">
-          <div className="flex items-center">
-            <div className="flex-1">
-              <h2 className="text-3xl font-bold mb-2">
-                {greeting}, {user?.name?.split(" ")[0] || "User"}!
-              </h2>
-              <p className="opacity-90">Welcome to your secure dashboard.</p>
-            </div>
-            <div className="hidden sm:block">
-              <div className="bg-white bg-opacity-20 rounded-full p-4">
-                <svg
-                  className="h-14 w-14 text-white"
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="2"
-                    d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"
-                  />
-                </svg>
-              </div>
-            </div>
-          </div>
-        </Card>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <Card 
-            title="Account Status" 
-            className="transition-transform hover:translate-y-[-5px]"
-          >
-            <div className="space-y-4">
-              <div className="flex justify-between">
-                <span className="text-gray-500">Role:</span>
-                <span className="font-semibold capitalize">{user?.role || "User"}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">2FA Status:</span>
-                <span
-                  className={`font-semibold ${
-                    user?.twoFactorEnabled ? "text-green-600" : "text-red-600"
-                  }`}
-                >
-                  {user?.twoFactorEnabled ? "Enabled" : "Disabled"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Last Login:</span>
-                <span className="font-semibold">
-                  {user?.lastLogin
-                    ? new Date(user.lastLogin).toLocaleString()
-                    : "N/A"}
-                </span>
-              </div>
-              <div className="pt-2">
-                <Button href="/profile" variant="secondary" size="sm">
-                  View Profile
-                </Button>
-              </div>
-            </div>
-          </Card>
-
-          <Card 
-            title="Security Score" 
-            className="transition-transform hover:translate-y-[-5px]"
-          >
-            <div className="text-center mb-4">
-              <div className="inline-flex items-center justify-center h-24 w-24 rounded-full bg-gray-50 mb-4">
-                <span className={`text-3xl font-bold ${getScoreColor()}`}>
-                  {securityScore}%
-                </span>
-              </div>
-              <div className="h-2 w-full bg-gray-200 rounded-full overflow-hidden">
-                <div 
-                  className={`h-full ${
-                    securityScore >= 80 ? 'bg-green-500' : 
-                    securityScore >= 60 ? 'bg-yellow-500' : 
-                    'bg-red-500'
-                  }`}
-                  style={{ width: `${securityScore}%` }}
-                ></div>
-              </div>
-            </div>
-            
-            {securityScore < 100 && securityTips.length > 0 && (
-              <div className="mt-4">
-                <h4 className="text-sm font-medium text-gray-700 mb-2">Security Recommendations:</h4>
-                <ul className="space-y-2">
-                  {securityTips.map((tip, index) => (
-                    <li key={index} className="text-xs text-gray-600 flex justify-between items-center">
-                      <span>{tip.text}</span>
-                      <Button href={tip.link} variant="primary" size="xs">
-                        {tip.linkText}
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            
-            {securityScore === 100 && (
-              <Alert type="success" message="Great job! Your account has excellent security." />
-            )}
-          </Card>
-
-          <Card 
-            title="Quick Actions" 
-            className="transition-transform hover:translate-y-[-5px]"
-          >
-            <div className="space-y-3">
-              <div>
-                <Button href="/settings/security" variant="primary" className="w-full mb-3">
-                  Security Settings
-                </Button>
-                
-                <Button href="/profile" variant="secondary" className="w-full mb-3">
-                  Update Profile
-                </Button>
-                
-                {user?.twoFactorEnabled ? (
-                  <Button href="/settings/security/two-factor" variant="secondary" className="w-full">
-                    Manage 2FA
-                  </Button>
-                ) : (
-                  <Button href="/settings/security/two-factor" variant="outline" className="w-full">
-                    Setup 2FA
-                  </Button>
-                )}
-              </div>
-            </div>
-          </Card>
+    <Layout title="Dashboard | Auth Platform">
+      <div className="max-w-7xl mx-auto">
+        <div className="pb-5 border-b border-gray-200 mb-6">
+          <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
+          <p className="text-gray-500 mt-1">
+            Welcome back, {user.name}!
+          </p>
         </div>
         
-        <Card
-          title="Recent Activity"
-          subtitle="Your account activity in the last 30 days"
-          footer={
-            <div className="text-right">
-              <Button variant="secondary" size="sm">
-                View All Activity
-              </Button>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <DashboardCard 
+            title="My Profile"
+            icon={<FaUser className="h-6 w-6" />}
+            description="Update your personal information"
+            linkText="Edit profile"
+            linkHref="/profile/edit"
+          />
+          
+          <DashboardCard 
+            title="Organizations"
+            icon={<FaUsers className="h-6 w-6" />}
+            description="Manage your organizations and teams"
+            linkText="View organizations"
+            linkHref="/organizations"
+            count={orgsCount}
+          />
+          
+          <DashboardCard 
+            title="Security"
+            icon={<FaShieldAlt className="h-6 w-6" />}
+            description="Active sessions and security settings"
+            linkText="Manage security"
+            linkHref="/profile/security"
+            count={sessionsCount}
+          />
+          
+          <DashboardCard 
+            title="API Keys"
+            icon={<FaKey className="h-6 w-6" />}
+            description="Manage your API keys"
+            linkText="Manage keys"
+            linkHref="/profile/api-keys"
+            count={apiKeysCount}
+          />
+        </div>
+        
+        {user.role === 'admin' && (
+          <div className="mt-10">
+            <h2 className="text-xl font-semibold mb-4">Admin Functions</h2>
+            <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4 text-indigo-700">
+              <p>As an administrator, you have access to advanced functions.</p>
+              <button
+                onClick={() => router.push('/admin/dashboard')}
+                className="mt-2 bg-indigo-600 text-white py-2 px-4 rounded hover:bg-indigo-700"
+              >
+                Go to Admin Dashboard
+              </button>
             </div>
-          }
-        >
-          <div className="overflow-hidden">
-            <ul className="divide-y divide-gray-200">
-              {user?.lastLogin && (
-                <li className="py-3 flex justify-between">
-                  <div className="flex items-center">
-                    <div className="bg-blue-100 rounded-full p-2 mr-3">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-blue-600" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M3 3a1 1 0 011-1h12a1 1 0 011 1v3a1 1 0 01-.293.707L12 11.414V15a1 1 0 01-.293.707l-2 2A1 1 0 018 17v-5.586L3.293 6.707A1 1 0 013 6V3z" clipRule="evenodd" />
-                      </svg>
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-gray-900">Successful login</p>
-                      <p className="text-xs text-gray-500">From IP: {user.lastLoginIP || 'Unknown'}</p>
-                    </div>
-                  </div>
-                  <div className="text-sm text-gray-500">
-                    {new Date(user.lastLogin).toLocaleDateString()}
-                  </div>
-                </li>
-              )}
-              
-              {user?.passwordUpdatedAt && (
-                <li className="py-3 flex justify-between">
-                  <div className="flex items-center">
-                    <div className="bg-green-100 rounded-full p-2 mr-3">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-green-600" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
-                      </svg>
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-gray-900">Password updated</p>
-                      <p className="text-xs text-gray-500">Updated by you</p>
-                    </div>
-                  </div>
-                  <div className="text-sm text-gray-500">
-                    {new Date(user.passwordUpdatedAt).toLocaleDateString()}
-                  </div>
-                </li>
-              )}
-              
-              {(!user?.lastLogin && !user?.passwordUpdatedAt) && (
-                <li className="py-4 text-center text-gray-500">
-                  No recent activity to display
-                </li>
-              )}
-            </ul>
           </div>
-        </Card>
+        )}
       </div>
     </Layout>
   );

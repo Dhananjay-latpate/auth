@@ -3,6 +3,8 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const twoFactor = require("../utils/twoFactorImproved");
+const Session = require("./Session");
+const ApiKey = require("./ApiKey");
 
 const UserSchema = new mongoose.Schema({
   name: {
@@ -89,6 +91,78 @@ const UserSchema = new mongoose.Schema({
   },
   ipAddress: String,
   userAgent: String,
+
+  // Enhanced profile information
+  profile: {
+    avatar: String,
+    bio: {
+      type: String,
+      maxlength: [500, "Bio cannot be more than 500 characters"],
+    },
+    location: String,
+    phoneNumber: String,
+    title: String,
+    socialLinks: {
+      twitter: String,
+      linkedin: String,
+      github: String,
+    },
+    preferences: {
+      theme: {
+        type: String,
+        enum: ["light", "dark", "system"],
+        default: "system",
+      },
+      emailNotifications: {
+        type: Boolean,
+        default: true,
+      },
+      twoFactorMethod: {
+        type: String,
+        enum: ["app", "email", "sms"],
+        default: "app",
+      },
+    },
+  },
+
+  // Organization memberships
+  organizations: [
+    {
+      organization: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Organization",
+      },
+      role: {
+        type: String,
+        enum: ["owner", "admin", "member"],
+        default: "member",
+      },
+      joinedAt: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+  ],
+
+  // Additional security options
+  securitySettings: {
+    passwordExpiryDays: {
+      type: Number,
+      default: 90, // Password expires after 90 days
+    },
+    requireStrongPassword: {
+      type: Boolean,
+      default: true,
+    },
+    allowedIpAddresses: [String], // IP whitelist
+  },
+
+  // Virtual fields for related data
+  // These aren't stored in the database but provide convenient access
+  currentSession: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Session",
+  },
 });
 
 // Encrypt password using bcrypt
@@ -182,5 +256,112 @@ UserSchema.pre("save", async function (next) {
     next(err);
   }
 });
+
+// Register new session - updated to use the Session model
+UserSchema.methods.registerSession = async function (
+  token,
+  deviceInfo,
+  ipAddress
+) {
+  try {
+    // Parse token to get expiration time
+    const decoded = jwt.decode(token);
+    const expiresAt = new Date(decoded.exp * 1000);
+
+    // Create a new session using the Session model
+    const session = new Session({
+      user: this._id,
+      token,
+      deviceInfo,
+      ipAddress,
+      expiresAt,
+      isCurrentSession: true,
+      userAgent: {},
+    });
+
+    // Save the new session
+    await session.save();
+
+    // Set all other sessions as not current
+    await Session.updateMany(
+      { user: this._id, _id: { $ne: session._id } },
+      { $set: { isCurrentSession: false } }
+    );
+
+    // Set this as the current session
+    this.currentSession = session._id;
+
+    // Clean up old sessions - keep only the latest 5
+    const sessions = await Session.find({ user: this._id })
+      .sort({ createdAt: -1 })
+      .select("_id");
+
+    if (sessions.length > 5) {
+      const sessionsToKeep = sessions.slice(0, 5).map((s) => s._id);
+      await Session.deleteMany({
+        user: this._id,
+        _id: { $nin: sessionsToKeep },
+      });
+    }
+
+    return session;
+  } catch (error) {
+    console.error("Error registering session:", error);
+    throw error;
+  }
+};
+
+// Generate API key for user - updated to use ApiKey model
+UserSchema.methods.generateApiKey = async function (
+  name,
+  permissions = [],
+  expiryDays = 365
+) {
+  try {
+    // Check if the user already has too many API keys
+    const keyCount = await ApiKey.countDocuments({
+      user: this._id,
+      isRevoked: false,
+    });
+    if (keyCount >= 10) {
+      throw new Error(
+        "Maximum API key limit reached. Please revoke an existing key first."
+      );
+    }
+
+    // Generate new API key
+    const { apiKey, prefix, hashedKey } = ApiKey.generateKey();
+
+    // Create new API key document
+    const newKey = new ApiKey({
+      user: this._id,
+      name,
+      key: hashedKey,
+      prefix,
+      permissions,
+      expiresAt: expiryDays
+        ? new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000)
+        : null,
+    });
+
+    await newKey.save();
+
+    // Return the full key only this once (it won't be retrievable again)
+    return `${prefix}.${apiKey}`;
+  } catch (error) {
+    console.error("Error generating API key:", error);
+    throw error;
+  }
+};
+
+// Static method to get user with active sessions
+UserSchema.statics.getUserWithActiveSessions = async function (userId) {
+  const user = await this.findById(userId);
+  if (!user) return null;
+
+  const sessions = await Session.findUserActiveSessions(userId);
+
+  return { user, sessions };
+};
 
 module.exports = mongoose.model("User", UserSchema);

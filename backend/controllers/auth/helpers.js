@@ -23,7 +23,7 @@ const generateToken = (userId) => {
  * @param {Object} res - Express response object
  * @param {Object} [userData] - Optional user data to send in response
  */
-const sendTokenResponse = (user, statusCode, res, userData = null) => {
+const sendTokenResponse = async (user, statusCode, res, userData = null) => {
   // Create token
   const token = user.getSignedJwtToken();
 
@@ -38,6 +38,30 @@ const sendTokenResponse = (user, statusCode, res, userData = null) => {
   // Set secure flag in production
   if (process.env.NODE_ENV === "production") {
     options.secure = true;
+  }
+
+  // Register this session in the user's sessions array using the session service
+  try {
+    const deviceInfo = res.req.headers["user-agent"] || "Unknown device";
+    const ipAddress = res.req.ip || res.req.connection.remoteAddress;
+
+    // Import the session service
+    const sessionService = require("../../services/sessionService");
+
+    // Create a new session
+    const session = await sessionService.createSession(
+      user,
+      token,
+      deviceInfo,
+      ipAddress
+    );
+
+    // Set this as the current session in the user model
+    user.currentSession = session._id;
+    await user.save({ validateBeforeSave: false });
+  } catch (error) {
+    console.error("Error registering session:", error);
+    // Continue anyway, don't fail the login just because session tracking failed
   }
 
   const responseBody = {

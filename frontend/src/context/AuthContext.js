@@ -3,19 +3,47 @@ import { useRouter } from "next/router";
 import { throttle } from "../utils/throttle";
 
 // Import utility functions
-import { storeAuthToken, clearAuthToken, getAuthToken, syncToken } from "../utils/tokenUtils";
+import {
+  storeAuthToken,
+  clearAuthToken,
+  getAuthToken,
+  syncToken,
+} from "../utils/tokenUtils";
 import { setupAxiosDefaults } from "../utils/axiosUtils";
-import { cacheUserData, getCachedUserData, clearUserCache, hasRecentCache } from "../utils/userDataCache";
+import {
+  cacheUserData,
+  getCachedUserData,
+  clearUserCache,
+  hasRecentCache,
+} from "../utils/userDataCache";
 
 // Import services
-import { registerUser, loginUser, logoutUser, fetchUserData } from "../services/authService";
-import { 
-  verifyTwoFactor, verifyRecoveryCode, setup2FA,
-  enable2FA, disable2FA, generateRecoveryCodes 
+import {
+  registerUser,
+  loginUser,
+  logoutUser,
+  fetchUserData,
+} from "../services/authService";
+import {
+  verifyTwoFactor,
+  verifyRecoveryCode,
+  setup2FA,
+  enable2FA,
+  disable2FA,
+  generateRecoveryCodes,
 } from "../services/twoFactorService";
-import { 
-  forgotPassword, resetPassword, verifyResetToken, updatePassword 
+import {
+  forgotPassword,
+  resetPassword,
+  verifyResetToken,
+  updatePassword,
 } from "../services/passwordService";
+
+// Import the new services
+import userService from "../services/userService";
+import sessionService from "../services/sessionService";
+import apiKeyService from "../services/apiKeyService";
+import organizationService from "../services/organizationService";
 
 // Create context
 const AuthContext = createContext(null);
@@ -96,9 +124,9 @@ export const AuthProvider = ({ children }) => {
               headers: { Authorization: `Bearer ${token.trim()}` },
             }
           );
-          
+
           const data = await res.json();
-          
+
           if (data.success) {
             storeAuthToken(data.token);
           }
@@ -114,13 +142,13 @@ export const AuthProvider = ({ children }) => {
   const register = async (userData) => {
     try {
       const data = await registerUser(userData);
-      
+
       if (data.success) {
         await checkUserLoggedIn(); // Fetch user data
         setupTokenRefresh();
         router.push("/dashboard");
       }
-      
+
       return data;
     } catch (error) {
       const errorMessage = error.response?.data?.error || "Registration failed";
@@ -190,7 +218,7 @@ export const AuthProvider = ({ children }) => {
         setTwoFactorEmail("");
         window.location.replace("/dashboard?no_redirect=true");
       }
-      
+
       return response;
     } catch (error) {
       setError(error.response?.data?.error || "Invalid verification code");
@@ -214,7 +242,7 @@ export const AuthProvider = ({ children }) => {
         setTwoFactorEmail("");
         window.location.replace("/dashboard?no_redirect=true");
       }
-      
+
       return response;
     } catch (error) {
       setError(error.response?.data?.error || "Invalid recovery code");
@@ -292,14 +320,14 @@ export const AuthProvider = ({ children }) => {
 
         // Add delay if we have cached data already
         if (cachedUser) {
-          await new Promise(resolve => setTimeout(resolve, 100));
+          await new Promise((resolve) => setTimeout(resolve, 100));
         }
 
         // Fetch fresh user data
         console.log("Fetching user data from API");
-        
+
         const userData = await fetchUserData();
-        
+
         if (userData) {
           console.log("[Auth] Successfully fetched user data");
           setUser(userData);
@@ -332,7 +360,9 @@ export const AuthProvider = ({ children }) => {
           }
 
           apiRetryTimeoutRef.current = setTimeout(() => {
-            console.log("Rate limit period expired, resetting rate limited state");
+            console.log(
+              "Rate limit period expired, resetting rate limited state"
+            );
             setRateLimited(false);
             apiRetryTimeoutRef.current = null;
           }, retryAfter * 1000);
@@ -380,7 +410,7 @@ export const AuthProvider = ({ children }) => {
     verifyRecoveryCode: verifyRecovery,
     hasPermission,
     checkUserLoggedIn: throttledCheckUserLoggedIn,
-    
+
     // Pass through service methods with error handling
     setup2FA: async () => {
       try {
@@ -419,7 +449,9 @@ export const AuthProvider = ({ children }) => {
         const res = await generateRecoveryCodes();
         return res;
       } catch (error) {
-        setError(error.response?.data?.error || "Failed to generate recovery codes");
+        setError(
+          error.response?.data?.error || "Failed to generate recovery codes"
+        );
         setTimeout(() => setError(null), 5000);
         throw error;
       }
@@ -452,7 +484,227 @@ export const AuthProvider = ({ children }) => {
         setTimeout(() => setError(null), 5000);
         throw error;
       }
-    }
+    },
+
+    // Add new user profile methods
+    getUserProfile: async () => {
+      try {
+        const res = await userService.getUserProfile();
+        return res;
+      } catch (error) {
+        setError(error.response?.data?.error || "Failed to fetch user profile");
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    updateUserProfile: async (profileData) => {
+      try {
+        const res = await userService.updateUserProfile(profileData);
+        await checkUserLoggedIn();
+        return res;
+      } catch (error) {
+        setError(
+          error.response?.data?.error || "Failed to update user profile"
+        );
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    updateUserAvatar: async (imageFile) => {
+      try {
+        const res = await userService.updateUserAvatar(imageFile);
+        await checkUserLoggedIn();
+        return res;
+      } catch (error) {
+        setError(error.response?.data?.error || "Failed to update avatar");
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+
+    // Add session management methods
+    getUserSessions: async () => {
+      try {
+        const res = await sessionService.getUserSessions();
+        return res;
+      } catch (error) {
+        setError(error.response?.data?.error || "Failed to fetch sessions");
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    revokeSession: async (sessionId) => {
+      try {
+        const res = await sessionService.revokeSession(sessionId);
+        return res;
+      } catch (error) {
+        setError(error.response?.data?.error || "Failed to revoke session");
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    revokeAllOtherSessions: async () => {
+      try {
+        const res = await sessionService.revokeAllOtherSessions();
+        return res;
+      } catch (error) {
+        setError(
+          error.response?.data?.error || "Failed to revoke other sessions"
+        );
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+
+    // Add API key management methods
+    getUserApiKeys: async () => {
+      try {
+        const res = await apiKeyService.getUserApiKeys();
+        return res;
+      } catch (error) {
+        setError(error.response?.data?.error || "Failed to fetch API keys");
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    generateApiKey: async (keyData) => {
+      try {
+        const res = await apiKeyService.generateApiKey(keyData);
+        return res;
+      } catch (error) {
+        setError(error.response?.data?.error || "Failed to generate API key");
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    revokeApiKey: async (keyId) => {
+      try {
+        const res = await apiKeyService.revokeApiKey(keyId);
+        return res;
+      } catch (error) {
+        setError(error.response?.data?.error || "Failed to revoke API key");
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+
+    // Add organization methods
+    getUserOrganizations: async () => {
+      try {
+        const res = await organizationService.getUserOrganizations();
+        return res;
+      } catch (error) {
+        setError(
+          error.response?.data?.error || "Failed to fetch organizations"
+        );
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    getOrganization: async (orgId) => {
+      try {
+        const res = await organizationService.getOrganization(orgId);
+        return res;
+      } catch (error) {
+        setError(
+          error.response?.data?.error || "Failed to fetch organization details"
+        );
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    createOrganization: async (orgData) => {
+      try {
+        const res = await organizationService.createOrganization(orgData);
+        return res;
+      } catch (error) {
+        setError(
+          error.response?.data?.error || "Failed to create organization"
+        );
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    updateOrganization: async (orgId, orgData) => {
+      try {
+        const res = await organizationService.updateOrganization(
+          orgId,
+          orgData
+        );
+        return res;
+      } catch (error) {
+        setError(
+          error.response?.data?.error || "Failed to update organization"
+        );
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    getOrganizationMembers: async (orgId) => {
+      try {
+        const res = await organizationService.getOrganizationMembers(orgId);
+        return res;
+      } catch (error) {
+        setError(
+          error.response?.data?.error || "Failed to fetch organization members"
+        );
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    inviteUserToOrganization: async (orgId, userData) => {
+      try {
+        const res = await organizationService.inviteUserToOrganization(
+          orgId,
+          userData
+        );
+        return res;
+      } catch (error) {
+        setError(
+          error.response?.data?.error || "Failed to invite user to organization"
+        );
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    leaveOrganization: async (orgId) => {
+      try {
+        const res = await organizationService.leaveOrganization(orgId);
+        return res;
+      } catch (error) {
+        setError(error.response?.data?.error || "Failed to leave organization");
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    removeUserFromOrganization: async (orgId, userId) => {
+      try {
+        const res = await organizationService.removeUserFromOrganization(
+          orgId,
+          userId
+        );
+        return res;
+      } catch (error) {
+        setError(
+          error.response?.data?.error ||
+            "Failed to remove user from organization"
+        );
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    deleteOrganization: async (orgId) => {
+      try {
+        const res = await organizationService.deleteOrganization(orgId);
+        return res;
+      } catch (error) {
+        setError(
+          error.response?.data?.error || "Failed to delete organization"
+        );
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
   };
 
   return (

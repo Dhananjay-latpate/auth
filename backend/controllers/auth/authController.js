@@ -194,6 +194,8 @@ exports.updateDetails = asyncHandler(async (req, res, next) => {
 const passwordController = require("./passwordController");
 const twoFactorController = require("./twoFactorController");
 const userController = require("./userController");
+const sessionController = require("./sessionController");
+const apiKeyController = require("./apiKeyController");
 
 // Password related endpoints
 exports.forgotPassword = passwordController.forgotPassword;
@@ -211,3 +213,12 @@ exports.verifyRecoveryCode = twoFactorController.verifyRecoveryCode;
 
 // User data endpoints
 exports.getMe = userController.getMe;
+
+// Session management exports
+exports.getSessions = sessionController.getSessions;
+exports.revokeSession = sessionController.revokeSession;
+
+// API key management exports
+exports.generateApiKey = apiKeyController.generateApiKey;
+exports.listApiKeys = apiKeyController.listApiKeys;
+exports.revokeApiKey = apiKeyController.revokeApiKey;
