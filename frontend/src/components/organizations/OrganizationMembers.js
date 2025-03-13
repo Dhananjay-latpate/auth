@@ -3,7 +3,11 @@ import { useAuth } from "../../context/AuthContext";
 import { FaPlus, FaTrash, FaUserCog } from "react-icons/fa";
 
 const OrganizationMembers = ({ organizationId }) => {
-  const { getOrganizationMembers, inviteUserToOrganization } = useAuth();
+  const {
+    getOrganizationMembers,
+    inviteUserToOrganization,
+    removeUserFromOrganization,
+  } = useAuth();
   const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -14,6 +18,8 @@ const OrganizationMembers = ({ organizationId }) => {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("member");
   const [inviting, setInviting] = useState(false);
+  // Add removing state
+  const [removing, setRemoving] = useState(false);
 
   const fetchMembers = async () => {
     setLoading(true);
@@ -59,6 +65,35 @@ const OrganizationMembers = ({ organizationId }) => {
       setInviting(false);
     }
   };
+
+  // Add the missing handleRemoveMember function
+const handleRemoveMember = async (memberId) => {
+    const confirmation = confirm(
+        "Are you sure you want to remove this member from the organization?"
+    );
+
+    if (!confirmation) {
+        return;
+    }
+
+    setRemoving(true);
+    try {
+        await removeUserFromOrganization(organizationId, memberId);
+
+        // Update the members list by removing the member
+        setMembers((prevMembers) =>
+            prevMembers.filter((member) => member.id !== memberId)
+        );
+
+        setSuccess("Member removed successfully");
+        setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+        setError(err.response?.data?.error || "Failed to remove member");
+        setTimeout(() => setError(null), 4000);
+    } finally {
+        setRemoving(false);
+    }
+};
 
   if (loading && !members.length) {
     return (
@@ -239,8 +274,9 @@ const OrganizationMembers = ({ organizationId }) => {
                       <button
                         className="text-red-600 hover:text-red-900"
                         onClick={() => handleRemoveMember(member.id)}
+                        disabled={removing}
                       >
-                        Remove
+                        {removing ? "Removing..." : "Remove"}
                       </button>
                     )}
                   </td>
