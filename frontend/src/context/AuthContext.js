@@ -1,103 +1,24 @@
 import { createContext, useState, useEffect, useContext, useRef } from "react";
 import { useRouter } from "next/router";
-import axios from "axios";
-import { setCookie, getCookie, deleteCookie } from "cookies-next";
 import { throttle } from "../utils/throttle";
+
+// Import utility functions
+import { storeAuthToken, clearAuthToken, getAuthToken, syncToken } from "../utils/tokenUtils";
+import { setupAxiosDefaults } from "../utils/axiosUtils";
+import { cacheUserData, getCachedUserData, clearUserCache, hasRecentCache } from "../utils/userDataCache";
+
+// Import services
+import { registerUser, loginUser, logoutUser, fetchUserData } from "../services/authService";
+import { 
+  verifyTwoFactor, verifyRecoveryCode, setup2FA,
+  enable2FA, disable2FA, generateRecoveryCodes 
+} from "../services/twoFactorService";
+import { 
+  forgotPassword, resetPassword, verifyResetToken, updatePassword 
+} from "../services/passwordService";
 
 // Create context
 const AuthContext = createContext(null);
-
-// Setup axios defaults and interceptors to handle auth
-const setupAxiosDefaults = (token) => {
-  if (token) {
-    axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-  } else {
-    delete axios.defaults.headers.common["Authorization"];
-  }
-};
-
-// Update token storage to use only cookies
-const storeAuthToken = (token) => {
-  if (!token) {
-    console.error("[Auth] Attempted to store empty token");
-    return;
-  }
-
-  try {
-    // Clean the token to remove any whitespace
-    const cleanToken = token.trim();
-    console.log("[Auth] Storing authentication token");
-
-    // Store in cookie
-    setCookie("token", cleanToken, {
-      maxAge: 30 * 24 * 60 * 60, // 30 days
-      path: "/",
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-    });
-
-    // Also save to localStorage for backup
-    if (typeof window !== "undefined") {
-      localStorage.setItem("auth_token", cleanToken);
-    }
-
-    // Set default authorization header
-    setupAxiosDefaults(cleanToken);
-
-    console.log("[Auth] Token stored successfully");
-    return true;
-  } catch (error) {
-    console.error("[Auth] Error storing token:", error);
-    return false;
-  }
-};
-
-const clearAuthToken = () => {
-  deleteCookie("token", { path: "/" });
-  if (typeof window !== "undefined") {
-    localStorage.removeItem("auth_token");
-  }
-  delete axios.defaults.headers.common["Authorization"];
-};
-
-// Create a more resilient user data cache
-const USER_CACHE_KEY = "user_data";
-const USER_CACHE_TIMESTAMP_KEY = "user_data_timestamp";
-const CACHE_MAX_AGE = 5 * 60 * 1000; // 5 minutes
-
-const cacheUserData = (userData) => {
-  if (typeof window !== "undefined" && userData) {
-    localStorage.setItem(USER_CACHE_KEY, JSON.stringify(userData));
-    localStorage.setItem(USER_CACHE_TIMESTAMP_KEY, Date.now().toString());
-  }
-};
-
-const getCachedUserData = () => {
-  if (typeof window === "undefined") return null;
-
-  try {
-    const cachedData = localStorage.getItem(USER_CACHE_KEY);
-    const timestamp = localStorage.getItem(USER_CACHE_TIMESTAMP_KEY);
-
-    if (!cachedData || !timestamp) return null;
-
-    // Check if cache is still valid
-    const now = Date.now();
-    const cacheAge = now - parseInt(timestamp);
-
-    if (cacheAge > CACHE_MAX_AGE) {
-      // Cache expired
-      return null;
-    }
-
-    return JSON.parse(cachedData);
-  } catch (error) {
-    console.error("Error reading cached user data:", error);
-    localStorage.removeItem(USER_CACHE_KEY);
-    localStorage.removeItem(USER_CACHE_TIMESTAMP_KEY);
-    return null;
-  }
-};
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -126,10 +47,7 @@ export const AuthProvider = ({ children }) => {
         }
 
         // Get token from localStorage or cookie
-        const token =
-          typeof window !== "undefined"
-            ? localStorage.getItem("auth_token") || getCookie("token")
-            : null;
+        const token = getAuthToken();
 
         if (token) {
           // Set default authorization header
@@ -146,7 +64,7 @@ export const AuthProvider = ({ children }) => {
 
     initAuth();
 
-    // Cleanup the token refresh interval on unmount
+    // Cleanup intervals on unmount
     return () => {
       if (tokenRefreshIntervalRef.current) {
         clearInterval(tokenRefreshIntervalRef.current);
@@ -170,31 +88,24 @@ export const AuthProvider = ({ children }) => {
     // Refresh token every 55 minutes (just before standard 1-hour expiration)
     tokenRefreshIntervalRef.current = setInterval(async () => {
       try {
-        const token = getCookie("token");
+        const token = getAuthToken();
         if (token) {
-          const refreshRes = await axios.get(
+          const res = await fetch(
             `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/refresh-token`,
             {
-              headers: {
-                Authorization: `Bearer ${token.trim()}`,
-              },
+              headers: { Authorization: `Bearer ${token.trim()}` },
             }
           );
-
-          if (refreshRes.data.success) {
-            const newToken = refreshRes.data.token.trim();
-            setCookie("token", newToken, {
-              maxAge: 30 * 24 * 60 * 60, // 30 days
-              path: "/",
-            });
-            // Update axios default header with the new token
-            setupAxiosDefaults(newToken);
+          
+          const data = await res.json();
+          
+          if (data.success) {
+            storeAuthToken(data.token);
           }
         }
       } catch (error) {
         console.error("Token refresh failed", error);
-        // If refresh fails, log the user out
-        logout();
+        logout(); // If refresh fails, log the user out
       }
     }, 55 * 60 * 1000);
   };
@@ -202,66 +113,19 @@ export const AuthProvider = ({ children }) => {
   // Register user with improved error handling
   const register = async (userData) => {
     try {
-      const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/register`,
-        userData,
-        { withCredentials: true }
-      );
-
-      if (res.data.success) {
-        setCookie("token", res.data.token.trim(), {
-          maxAge: 30 * 24 * 60 * 60,
-          path: "/",
-        });
+      const data = await registerUser(userData);
+      
+      if (data.success) {
         await checkUserLoggedIn(); // Fetch user data
         setupTokenRefresh();
         router.push("/dashboard");
       }
-
-      return res.data;
+      
+      return data;
     } catch (error) {
-      console.error("Registration error:", error);
-
-      // Format meaningful error message based on error type
-      let errorMessage = "Registration failed. Please try again later.";
-
-      // Handle specific error types
-      if (error.response) {
-        const { status, data } = error.response;
-
-        // Handle duplicate email (409 Conflict or code 11000)
-        if (status === 409 || data?.code === 11000) {
-          errorMessage =
-            data?.error ||
-            "This email is already registered. Please try logging in instead.";
-        }
-        // Handle validation errors
-        else if (data?.validationError) {
-          errorMessage =
-            data.error || "Please check your information and try again.";
-        }
-        // Handle other API errors with messages
-        else if (data?.error) {
-          errorMessage = data.error;
-        }
-        // Handle other status codes
-        else if (status === 400) {
-          errorMessage =
-            "Invalid input. Please check your information and try again.";
-        } else if (status === 429) {
-          errorMessage = "Too many attempts. Please try again later.";
-        } else if (status === 500) {
-          errorMessage = "Server error. Please try again later.";
-        }
-      }
-
-      // Update global error state
+      const errorMessage = error.response?.data?.error || "Registration failed";
       setError(errorMessage);
-
-      // Clear error after timeout
       setTimeout(() => setError(null), 5000);
-
-      // Re-throw for component-level handling
       throw error;
     }
   };
@@ -271,206 +135,108 @@ export const AuthProvider = ({ children }) => {
     try {
       // Clear any existing auth state
       clearAuthToken();
-      localStorage.removeItem("auth_token");
-      sessionStorage.clear();
+      clearUserCache();
 
-      console.log(`[Auth] Login attempt for: ${email}`);
+      const response = await loginUser({ email, password });
 
-      const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/login`,
-        { email, password }
-      );
+      // Handle 2FA requirement
+      if (response.requireTwoFactor) {
+        setRequiresTwoFactor(true);
+        setTwoFactorEmail(response.email);
+        return { requireTwoFactor: true, email: response.email };
+      }
 
-      if (res.data.success) {
-        // Check if two-factor auth is required
-        if (res.data.requireTwoFactor) {
-          console.log("[Auth] 2FA required for login");
-          setRequiresTwoFactor(true);
-          setTwoFactorEmail(res.data.email);
-          return { requireTwoFactor: true, email: res.data.email };
-        }
-
-        console.log("[Auth] Login successful, setting token");
-        const token = res.data.token;
-
-        if (!token) {
-          console.error(
-            "[Auth] No token received in successful login response"
-          );
-          throw new Error("No authentication token received");
-        }
-
-        storeAuthToken(token);
-
-        // Use a simpler approach - set the user from response data if available
-        if (res.data.data) {
-          setUser(res.data.data);
-          cacheUserData(res.data.data);
-          setupTokenRefresh();
-
-          // Redirect to dashboard with flag to prevent redirect loops
-          console.log("[Auth] Redirecting to dashboard after login");
-          window.location.href = "/dashboard?no_redirect=true";
-          return res.data;
-        }
-
-        // Fetch user data if not included in response
+      // If we have user data in the response
+      if (response.data) {
+        setUser(response.data);
+        cacheUserData(response.data);
+        setupTokenRefresh();
+      } else {
+        // Otherwise fetch user data
         try {
-          const userData = await fetchUserData(token);
+          const userData = await fetchUserData();
           if (userData) {
             setUser(userData);
             cacheUserData(userData);
             setupTokenRefresh();
           }
-
-          // Redirect to dashboard with flag to prevent redirect loops
-          console.log("[Auth] Redirecting to dashboard after login");
-          window.location.href = "/dashboard?no_redirect=true";
-          return res.data;
         } catch (err) {
           console.error("Error fetching initial user data:", err);
-          // Still redirect even if we can't get user data - the token is valid
-          window.location.href = "/dashboard?no_redirect=true";
-          return res.data;
         }
-      } else {
-        console.error("[Auth] Login failed but no error returned from server");
-        throw new Error(res.data.error || "Login failed. Please try again.");
       }
+
+      // Redirect to dashboard with flag to prevent redirect loops
+      window.location.href = "/dashboard?no_redirect=true";
+      return response;
     } catch (error) {
-      console.error("Login error:", error);
-      let errorMessage = "Login failed. Please check your credentials.";
-
-      if (error.response) {
-        // Handle rate limiting
-        if (error.response.status === 429) {
-          errorMessage = "Too many login attempts. Please try again later.";
-        } else if (error.response.data?.error) {
-          errorMessage = error.response.data.error;
-        }
-      }
-
-      setError(errorMessage);
+      setError(error.message);
       setTimeout(() => setError(null), 5000);
       throw error;
     }
   };
 
-  // Helper function to fetch user data with a specific token
-  const fetchUserData = async (token) => {
-    try {
-      // Set up headers with the provided token
-      const headers = { Authorization: `Bearer ${token.trim()}` };
-
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/me`,
-        {
-          headers,
-          timeout: 10000,
-          // Add cache-busting query param
-          params: { t: Date.now() },
-        }
-      );
-
-      if (res.data.success) {
-        return res.data.data;
-      }
-      return null;
-    } catch (error) {
-      console.error("Error fetching specific user data:", error);
-      throw error;
-    }
-  };
-
   // Verify two-factor authentication
-  const verifyTwoFactor = async (token) => {
+  const verify2FA = async (token) => {
     try {
       if (!twoFactorEmail) {
         throw new Error("No email provided for 2FA verification");
       }
 
-      const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/2fa/verify`,
-        { email: twoFactorEmail, token }
-      );
+      const response = await verifyTwoFactor(twoFactorEmail, token);
 
-      if (res.data.success) {
+      if (response.success) {
         // Reset 2FA state
         setRequiresTwoFactor(false);
         setTwoFactorEmail("");
-
-        // Store token and redirect
-        storeAuthToken(res.data.token);
         window.location.replace("/dashboard?no_redirect=true");
-        return res.data;
       }
-      return null;
+      
+      return response;
     } catch (error) {
-      console.error("2FA verification error:", error);
       setError(error.response?.data?.error || "Invalid verification code");
       setTimeout(() => setError(null), 5000);
       throw error;
     }
   };
 
-  // Verify recovery code for 2FA
-  const verifyRecoveryCode = async (recoveryCode) => {
+  // Verify recovery code
+  const verifyRecovery = async (recoveryCode) => {
     try {
       if (!twoFactorEmail) {
-        throw new Error("No email provided for recovery code verification");
+        throw new Error("No email provided for recovery verification");
       }
 
-      const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/2fa/verify-recovery`,
-        { email: twoFactorEmail, recoveryCode }
-      );
+      const response = await verifyRecoveryCode(twoFactorEmail, recoveryCode);
 
-      if (res.data.success) {
+      if (response.success) {
         // Reset 2FA state
         setRequiresTwoFactor(false);
         setTwoFactorEmail("");
-
-        // Store token and redirect
-        storeAuthToken(res.data.token);
         window.location.replace("/dashboard?no_redirect=true");
-        return res.data;
       }
-      return null;
+      
+      return response;
     } catch (error) {
-      console.error("Recovery code verification error:", error);
       setError(error.response?.data?.error || "Invalid recovery code");
       setTimeout(() => setError(null), 5000);
       throw error;
     }
   };
 
-  // Update logout function
+  // Logout user
   const logout = async () => {
     try {
-      const token = getCookie("token");
-
       // Immediately clear local auth state first
       clearAuthToken();
       setUser(null);
-      localStorage.removeItem(USER_CACHE_KEY);
-      localStorage.removeItem(USER_CACHE_TIMESTAMP_KEY);
+      clearUserCache();
 
       if (tokenRefreshIntervalRef.current) {
         clearInterval(tokenRefreshIntervalRef.current);
       }
 
       // Call logout API (non-blocking)
-      if (token) {
-        try {
-          await axios.get(
-            `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/logout`
-          );
-          console.log("[Auth] Logout API call successful");
-        } catch (error) {
-          console.error("[Auth] Logout API call error:", error);
-          // Continue with client-side logout even if API call fails
-        }
-      }
+      await logoutUser();
     } catch (error) {
       console.error("Logout error:", error);
     } finally {
@@ -481,8 +247,7 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Check if user is logged in with concurrency handling using a stored promise
-  // Apply improvements to handle rate limiting
+  // Check if user is logged in with concurrency handling
   async function checkUserLoggedIn() {
     console.log("[Auth] Checking login state");
 
@@ -496,16 +261,9 @@ export const AuthProvider = ({ children }) => {
       return user; // Return current user state if rate limited
     }
 
-    // If we have recent cached user data (< 30 seconds old), use it without API call
-    const cachedUser = getCachedUserData();
-    const now = Date.now();
-    const cacheTimestamp = parseInt(
-      localStorage.getItem(USER_CACHE_TIMESTAMP_KEY) || "0"
-    );
-    const cacheAge = now - cacheTimestamp;
-
-    if (cachedUser && cacheAge < 30000) {
-      // 30 seconds
+    // Use very recent cached data without API call
+    if (hasRecentCache()) {
+      const cachedUser = getCachedUserData();
       console.log("[Auth] Using very recent cached data, skipping API call");
       setUser(cachedUser);
       return cachedUser;
@@ -514,69 +272,47 @@ export const AuthProvider = ({ children }) => {
     authPromiseRef.current = (async () => {
       try {
         // Always try to use cached data first
+        const cachedUser = getCachedUserData();
         if (cachedUser) {
           setUser(cachedUser);
         }
 
-        // Retrieve token from cookie or localStorage
-        let token =
-          getCookie("token") ||
-          (typeof window !== "undefined" && localStorage.getItem("auth_token"));
+        // Get token from storage
+        const token = getAuthToken();
 
         if (!token) {
           setUser(null);
-          localStorage.removeItem(USER_CACHE_KEY);
-          localStorage.removeItem(USER_CACHE_TIMESTAMP_KEY);
+          clearUserCache();
           return null;
         }
 
-        token = token.trim();
+        // Ensure token is stored in all places
+        syncToken(token);
         setupAxiosDefaults(token);
 
-        // If token exists in localStorage but not in cookie, restore it
-        if (!getCookie("token") && typeof window !== "undefined") {
-          setCookie("token", token, {
-            maxAge: 30 * 24 * 60 * 60,
-            path: "/",
-          });
-        }
-
-        // Add delay between API calls to reduce load
+        // Add delay if we have cached data already
         if (cachedUser) {
-          // If we have cached data already, delay new API call slightly
-          await new Promise((resolve) => setTimeout(resolve, 100));
+          await new Promise(resolve => setTimeout(resolve, 100));
         }
 
-        // Fetch fresh user data from the API
+        // Fetch fresh user data
         console.log("Fetching user data from API");
-
-        // Generate a unique cache-busting parameter
-        const cacheBuster = `t=${Date.now()}`;
-
-        const res = await axios.get(
-          `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/me?${cacheBuster}`,
-          {
-            headers: {
-              "Cache-Control": "no-cache",
-              Authorization: `Bearer ${token.trim()}`,
-            },
-            timeout: 10000,
-          }
-        );
-
-        if (res.data.success) {
+        
+        const userData = await fetchUserData();
+        
+        if (userData) {
           console.log("[Auth] Successfully fetched user data");
-          setUser(res.data.data);
-          cacheUserData(res.data.data);
+          setUser(userData);
+          cacheUserData(userData);
           setupTokenRefresh();
-          return res.data.data;
+          return userData;
         }
 
         return null;
       } catch (error) {
         console.error("Error fetching user:", error);
 
-        // Handle rate limiting specifically
+        // Handle rate limiting
         if (error.response?.status === 429) {
           console.warn("Rate limited when fetching user data");
           setRateLimited(true);
@@ -584,12 +320,11 @@ export const AuthProvider = ({ children }) => {
           // Use cached data when rate limited
           const cachedUser = getCachedUserData();
           if (cachedUser) {
-            console.log("Using cached user data during rate limiting");
             setUser(cachedUser);
           }
 
           // Schedule retry after the rate limit window
-          const retryAfter = error.response?.data?.retryAfter || 60; // Default to 60 seconds
+          const retryAfter = error.response?.data?.retryAfter || 60;
           console.log(`Will retry after ${retryAfter} seconds`);
 
           if (apiRetryTimeoutRef.current) {
@@ -597,9 +332,7 @@ export const AuthProvider = ({ children }) => {
           }
 
           apiRetryTimeoutRef.current = setTimeout(() => {
-            console.log(
-              "Rate limit period expired, resetting rate limited state"
-            );
+            console.log("Rate limit period expired, resetting rate limited state");
             setRateLimited(false);
             apiRetryTimeoutRef.current = null;
           }, retryAfter * 1000);
@@ -610,11 +343,8 @@ export const AuthProvider = ({ children }) => {
         if (error.response && error.response.status === 401) {
           console.log("Unauthorized access - clearing tokens");
           setUser(null);
-          deleteCookie("token", { path: "/" });
-          localStorage.removeItem("auth_token");
-          localStorage.removeItem(USER_CACHE_KEY);
-          localStorage.removeItem(USER_CACHE_TIMESTAMP_KEY);
-          delete axios.defaults.headers.common["Authorization"];
+          clearAuthToken();
+          clearUserCache();
         }
       } finally {
         setLoading(false);
@@ -626,153 +356,6 @@ export const AuthProvider = ({ children }) => {
     return authPromiseRef.current;
   }
 
-  // Setup Two-Factor Authentication
-  const setup2FA = async () => {
-    try {
-      const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/2fa/setup`
-      );
-
-      return res.data;
-    } catch (error) {
-      console.error("2FA setup error:", error);
-      setError(error.response?.data?.error || "Failed to setup 2FA");
-      setTimeout(() => setError(null), 5000);
-      throw error;
-    }
-  };
-
-  // Enable Two-Factor Authentication
-  const enable2FA = async (token) => {
-    try {
-      const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/2fa/enable`,
-        { token }
-      );
-
-      // Refresh user data to reflect 2FA status
-      await checkUserLoggedIn();
-      return res.data;
-    } catch (error) {
-      console.error("Enable 2FA error:", error);
-      setError(error.response?.data?.error || "Failed to enable 2FA");
-      setTimeout(() => setError(null), 5000);
-      throw error;
-    }
-  };
-
-  // Disable Two-Factor Authentication
-  const disable2FA = async (token) => {
-    try {
-      const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/2fa/disable`,
-        { token }
-      );
-
-      // Refresh user data to reflect 2FA status
-      await checkUserLoggedIn();
-      return res.data;
-    } catch (error) {
-      console.error("Disable 2FA error:", error);
-      setError(error.response?.data?.error || "Failed to disable 2FA");
-      setTimeout(() => setError(null), 5000);
-      throw error;
-    }
-  };
-
-  // Generate recovery codes for 2FA
-  const generateRecoveryCodes = async () => {
-    try {
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/2fa/recovery-codes`
-      );
-      return res.data;
-    } catch (error) {
-      console.error("Generate recovery codes error:", error);
-      setError(
-        error.response?.data?.error || "Failed to generate recovery codes"
-      );
-      setTimeout(() => setError(null), 5000);
-      throw error;
-    }
-  };
-
-  // Request password reset
-  const forgotPassword = async (email) => {
-    try {
-      const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/forgotpassword`,
-        { email }
-      );
-      return res.data;
-    } catch (error) {
-      console.error("Forgot password error:", error);
-      // Always return a consistent message to prevent user enumeration
-      const message =
-        error.response?.status === 429
-          ? "Too many reset attempts. Please try again later."
-          : "If a user with that email exists, a reset link has been sent.";
-
-      setError(message);
-      setTimeout(() => setError(null), 5000);
-      return { success: false, message };
-    }
-  };
-
-  // Reset password using token
-  const resetPassword = async (token, password, confirmPassword) => {
-    try {
-      const res = await axios.put(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/resetpassword/${token}`,
-        { password, confirmPassword }
-      );
-
-      if (res.data.success) {
-        return res.data;
-      }
-    } catch (error) {
-      console.error("Reset password error:", error);
-      setError(
-        error.response?.data?.error ||
-          "Failed to reset password. Please try again."
-      );
-      setTimeout(() => setError(null), 5000);
-      throw error;
-    }
-  };
-
-  // Verify reset password token
-  const verifyResetToken = async (token) => {
-    try {
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/verifytoken/${token}`
-      );
-      return res.data;
-    } catch (error) {
-      console.error("Verify token error:", error);
-      return { success: false, error: "Invalid or expired token" };
-    }
-  };
-
-  // Update password
-  const updatePassword = async (currentPassword, newPassword) => {
-    try {
-      const res = await axios.put(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/v1/auth/updatepassword`,
-        { currentPassword, newPassword }
-      );
-      return res.data;
-    } catch (error) {
-      console.error("Update password error:", error);
-      setError(
-        error.response?.data?.error ||
-          "Failed to update password. Please try again."
-      );
-      setTimeout(() => setError(null), 5000);
-      throw error;
-    }
-  };
-
   // Check if user has specified permission
   const hasPermission = (permission) => {
     if (!user) return false;
@@ -782,32 +365,98 @@ export const AuthProvider = ({ children }) => {
     return user.permissions && user.permissions.includes(permission);
   };
 
+  // Create the auth context value object with all the methods
+  const authContextValue = {
+    user,
+    loading,
+    error,
+    requiresTwoFactor,
+    twoFactorEmail,
+    rateLimited,
+    register,
+    login,
+    logout,
+    verifyTwoFactor: verify2FA,
+    verifyRecoveryCode: verifyRecovery,
+    hasPermission,
+    checkUserLoggedIn: throttledCheckUserLoggedIn,
+    
+    // Pass through service methods with error handling
+    setup2FA: async () => {
+      try {
+        const res = await setup2FA();
+        return res;
+      } catch (error) {
+        setError(error.response?.data?.error || "Failed to setup 2FA");
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    enable2FA: async (token) => {
+      try {
+        const res = await enable2FA(token);
+        await checkUserLoggedIn();
+        return res;
+      } catch (error) {
+        setError(error.response?.data?.error || "Failed to enable 2FA");
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    disable2FA: async (token) => {
+      try {
+        const res = await disable2FA(token);
+        await checkUserLoggedIn();
+        return res;
+      } catch (error) {
+        setError(error.response?.data?.error || "Failed to disable 2FA");
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    generateRecoveryCodes: async () => {
+      try {
+        const res = await generateRecoveryCodes();
+        return res;
+      } catch (error) {
+        setError(error.response?.data?.error || "Failed to generate recovery codes");
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    forgotPassword: async (email) => {
+      const res = await forgotPassword(email);
+      if (!res.success) {
+        setError(res.message);
+        setTimeout(() => setError(null), 5000);
+      }
+      return res;
+    },
+    resetPassword: async (token, password, confirmPassword) => {
+      try {
+        const res = await resetPassword(token, password, confirmPassword);
+        return res;
+      } catch (error) {
+        setError(error.response?.data?.error || "Failed to reset password");
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    },
+    verifyResetToken: async (token) => await verifyResetToken(token),
+    updatePassword: async (currentPassword, newPassword) => {
+      try {
+        const res = await updatePassword(currentPassword, newPassword);
+        return res;
+      } catch (error) {
+        setError(error.response?.data?.error || "Failed to update password");
+        setTimeout(() => setError(null), 5000);
+        throw error;
+      }
+    }
+  };
+
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        loading,
-        error,
-        requiresTwoFactor,
-        twoFactorEmail,
-        rateLimited,
-        register,
-        login,
-        logout,
-        verifyTwoFactor,
-        verifyRecoveryCode,
-        hasPermission,
-        checkUserLoggedIn: throttledCheckUserLoggedIn, // Use the throttled version
-        setup2FA,
-        enable2FA,
-        disable2FA,
-        generateRecoveryCodes,
-        forgotPassword,
-        resetPassword,
-        verifyResetToken,
-        updatePassword,
-      }}
-    >
+    <AuthContext.Provider value={authContextValue}>
       {children}
     </AuthContext.Provider>
   );

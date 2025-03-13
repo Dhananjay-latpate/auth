@@ -99,12 +99,12 @@ const Login = () => {
 
   return (
     <Layout requireAuth={false} title="Login">
-      <Card className="max-w-md mx-auto slide-in" bodyClassName="px-6 py-8">
-        <div className="mb-6">
-          <h2 className="text-center text-3xl font-extrabold text-gray-900 mb-4">
+      <Card className="max-w-md mx-auto slide-in" bodyClassName="px-8 py-10">
+        <div className="mb-8">
+          <h2 className="text-center text-4xl font-bold text-gray-900 mb-6">
             Sign in to your account
           </h2>
-          <p className="text-center text-sm text-gray-600">
+          <p className="text-center text-base text-gray-600">
             Or{" "}
             <Link
               href="/register"
@@ -123,9 +123,9 @@ const Login = () => {
           />
         )}
 
-        <form className="space-y-6" onSubmit={handleSubmit}>
+        <form className="space-y-8" onSubmit={handleSubmit}>
           <div>
-            <label htmlFor="email" className="form-label">
+            <label htmlFor="email" className="form-label text-lg">
               Email address
             </label>
             <input
@@ -134,7 +134,7 @@ const Login = () => {
               type="email"
               autoComplete="email"
               required
-              className="form-input"
+              className="form-input mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
               value={email}
               onChange={handleInputChange}
             />
@@ -142,7 +142,7 @@ const Login = () => {
 
           <div>
             <div className="flex items-center justify-between">
-              <label htmlFor="password" className="form-label">
+              <label htmlFor="password" className="form-label text-lg">
                 Password
               </label>
               <div className="text-sm">
@@ -160,7 +160,7 @@ const Login = () => {
               type="password"
               autoComplete="current-password"
               required
-              className="form-input"
+              className="form-input mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
               value={password}
               onChange={handleInputChange}
             />
@@ -170,7 +170,7 @@ const Login = () => {
             <Button
               type="submit"
               variant="primary"
-              className="w-full"
+              className="w-full py-3"
               isLoading={isSubmitting}
             >
               Sign in
