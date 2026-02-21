@@ -4,8 +4,20 @@ const MAX_RETRIES = 5;
 const RETRY_INTERVAL_MS = 5000;
 
 const connectDB = async (retries = MAX_RETRIES) => {
+  const mongoUri =
+    process.env.MONGO_URI ||
+    process.env.MONGODB_URL ||
+    process.env.MONGO_URL;
+
+  if (!mongoUri) {
+    console.error(
+      "No MongoDB connection URI found. Set MONGO_URI, MONGODB_URL, or MONGO_URL environment variable."
+    );
+    process.exit(1);
+  }
+
   try {
-    const conn = await mongoose.connect(process.env.MONGO_URI);
+    const conn = await mongoose.connect(mongoUri);
 
     console.log(`MongoDB Connected: ${conn.connection.host}`);
   } catch (error) {
