@@ -8,6 +8,8 @@ const {
   isStrongPassword,
   sanitizeInput,
 } = require("./helpers");
+const { logAuditEvent, getRequestMeta } = require("../../utils/auditLog");
+const logger = require("../../utils/logger");
 
 // Simple in-memory rate limiting for password reset requests
 const resetAttempts = new Map();
@@ -84,7 +86,14 @@ exports.updatePassword = asyncHandler(async (req, res, next) => {
     await user.save();
 
     // Security: Log this important security action
-    console.log(`Password updated for user: ${user.email}`);
+    logger.info(`Password updated for user: ${user.email}`);
+
+    const meta = getRequestMeta(req);
+    await logAuditEvent({
+      action: "password_change",
+      userId: user._id,
+      ...meta,
+    });
 
     // Optionally send email notification of password change
     try {
@@ -257,11 +266,16 @@ exports.resetPassword = asyncHandler(async (req, res, next) => {
     await user.save();
 
     // Log this security action
-    console.log(
-      `Password reset completed for user: ${user.email}, IP: ${
-        req.ip || "Unknown"
-      }`
-    );
+    logger.info(`Password reset completed for user: ${user.email}`, {
+      ip: req.ip || "Unknown",
+    });
+
+    const meta = getRequestMeta(req);
+    await logAuditEvent({
+      action: "password_reset",
+      userId: user._id,
+      ...meta,
+    });
 
     // Optionally send confirmation email
     try {
@@ -271,15 +285,14 @@ exports.resetPassword = asyncHandler(async (req, res, next) => {
         message: `Your password has been reset successfully. If you didn't make this change, please contact support immediately.`,
       });
     } catch (emailError) {
-      console.error(
-        "Failed to send password reset confirmation email",
-        emailError
-      );
+      logger.error("Failed to send password reset confirmation email", {
+        error: emailError.message,
+      });
     }
 
     sendTokenResponse(user, 200, res);
   } catch (error) {
-    console.error("Password reset error:", error);
+    logger.error("Password reset error:", { error: error.message });
     return next(new ErrorResponse("Error resetting password", 500));
   }
 });

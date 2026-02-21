@@ -163,6 +163,16 @@ const UserSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: "Session",
   },
+
+  // OAuth provider IDs for social login
+  oauthProviders: {
+    google: {
+      id: String,
+    },
+    github: {
+      id: String,
+    },
+  },
 });
 
 // Encrypt password using bcrypt

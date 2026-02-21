@@ -4,6 +4,8 @@ const asyncHandler = require("../../middleware/async");
 const crypto = require("crypto");
 const { sendTokenResponse } = require("./helpers");
 const twoFactor = require("../../utils/twoFactorImproved");
+const { logAuditEvent, getRequestMeta } = require("../../utils/auditLog");
+const logger = require("../../utils/logger");
 
 // @desc      Login user
 // @route     POST /api/v1/auth/login
@@ -26,13 +28,13 @@ exports.login = asyncHandler(async (req, res, next) => {
 
     // Check if user exists
     if (!user) {
-      console.log(`[Auth] Login failed - user not found: ${email}`);
+      logger.warn(`Login failed - user not found: ${email}`, { ip: req.ip });
       return next(new ErrorResponse("Invalid credentials", 401));
     }
 
     // Check if account is locked
     if (user.isLocked) {
-      console.log(`[Auth] Login attempt for locked account: ${email}`);
+      logger.warn(`Login attempt for locked account: ${email}`);
       if (user.lockUntil && user.lockUntil > Date.now()) {
         return next(
           new ErrorResponse(
@@ -53,7 +55,7 @@ exports.login = asyncHandler(async (req, res, next) => {
     const isPasswordMatch = await user.matchPassword(password);
 
     if (!isPasswordMatch) {
-      console.log(`[Auth] Login failed - password mismatch: ${email}`);
+      logger.warn(`Login failed - password mismatch: ${email}`);
 
       // Increment failed login attempts
       user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
@@ -63,6 +65,13 @@ exports.login = asyncHandler(async (req, res, next) => {
         user.isLocked = true;
         user.lockUntil = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
         await user.save({ validateBeforeSave: false });
+        const meta = getRequestMeta(req);
+        await logAuditEvent({
+          action: "account_locked",
+          userId: user._id,
+          ...meta,
+          details: { reason: "too_many_failed_logins" },
+        });
         return next(
           new ErrorResponse(
             "Account locked due to too many failed attempts. Try again in 15 minutes.",
@@ -72,6 +81,13 @@ exports.login = asyncHandler(async (req, res, next) => {
       }
 
       await user.save({ validateBeforeSave: false });
+      const meta = getRequestMeta(req);
+      await logAuditEvent({
+        action: "failed_login",
+        userId: user._id,
+        ...meta,
+        details: { email },
+      });
       return next(new ErrorResponse("Invalid credentials", 401));
     }
 
@@ -80,7 +96,7 @@ exports.login = asyncHandler(async (req, res, next) => {
 
     // Check if two-factor authentication is enabled
     if (user.twoFactorEnabled) {
-      console.log(`[Auth] 2FA required for: ${email}`);
+      logger.info(`2FA required for: ${email}`);
       user.lastLogin = Date.now();
       await user.save({ validateBeforeSave: false });
 
@@ -96,7 +112,15 @@ exports.login = asyncHandler(async (req, res, next) => {
     user.lastLoginIP = req.ip;
     await user.save({ validateBeforeSave: false });
 
-    console.log(`[Auth] Login successful for: ${email}`);
+    logger.info(`Login successful: ${email}`);
+
+    const meta = getRequestMeta(req);
+    await logAuditEvent({
+      action: "login",
+      userId: user._id,
+      ...meta,
+      details: { email },
+    });
 
     // Get user data for the response but exclude sensitive information
     const userData = await User.findById(user.id).select(
@@ -106,7 +130,7 @@ exports.login = asyncHandler(async (req, res, next) => {
     // Send token response
     sendTokenResponse(user, 200, res, userData);
   } catch (error) {
-    console.error(`[Auth] Login error for ${email}:`, error);
+    logger.error(`Login error for ${email}:`, { error: error.message });
     next(error);
   }
 });
@@ -128,6 +152,15 @@ exports.getMe = asyncHandler(async (req, res, next) => {
 // @route     GET /api/v1/auth/logout
 // @access    Private
 exports.logout = asyncHandler(async (req, res, next) => {
+  if (req.user) {
+    const meta = getRequestMeta(req);
+    await logAuditEvent({
+      action: "logout",
+      userId: req.user._id,
+      ...meta,
+    });
+  }
+
   res.cookie("token", "none", {
     expires: new Date(Date.now() + 10 * 1000), // 10 seconds
     httpOnly: true,
@@ -165,6 +198,14 @@ exports.register = asyncHandler(async (req, res, next) => {
     password,
     role: req.isAdminCreatingUser ? role || "user" : "user",
     createdBy: req.isAdminCreatingUser ? req.user.id : undefined,
+  });
+
+  const meta = getRequestMeta(req);
+  await logAuditEvent({
+    action: "user_created",
+    userId: user._id,
+    ...meta,
+    details: { email: user.email, createdByAdmin: !!req.isAdminCreatingUser },
   });
 
   // Send token response
