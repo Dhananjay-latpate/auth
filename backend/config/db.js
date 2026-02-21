@@ -5,9 +5,7 @@ const RETRY_INTERVAL_MS = 5000;
 
 const connectDB = async (retries = MAX_RETRIES) => {
   const mongoUri =
-    process.env.MONGO_URI ||
-    process.env.MONGODB_URL ||
-    process.env.MONGO_DB;
+      process.env.MONGO_URL;
 
   if (!mongoUri) {
     console.error(
