@@ -7,7 +7,7 @@ const connectDB = async (retries = MAX_RETRIES) => {
   const mongoUri =
     process.env.MONGO_URI ||
     process.env.MONGODB_URL ||
-    process.env.MONGO_URL;
+    process.env.MONGO_DB;
 
   if (!mongoUri) {
     console.error(
