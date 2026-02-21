@@ -2,6 +2,8 @@
 const nextConfig = {
   reactStrictMode: true,
   swcMinify: true,
+  // Enable standalone output for Docker builds
+  output: "standalone",
   async rewrites() {
     return [
       {

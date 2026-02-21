@@ -4,6 +4,8 @@ const ErrorResponse = require("../../utils/errorResponse");
 // Use the improved TOTP implementation
 const twoFactor = require("../../utils/twoFactorImproved");
 const { sendTokenResponse } = require("./helpers");
+const { logAuditEvent, getRequestMeta } = require("../../utils/auditLog");
+const logger = require("../../utils/logger");
 
 // @desc      Setup 2FA
 // @route     POST /api/v1/auth/2fa/setup
@@ -99,7 +101,14 @@ exports.enable2FA = asyncHandler(async (req, res, next) => {
 
     await user.save({ validateBeforeSave: false });
 
-    console.log("2FA successfully enabled for user:", user.email);
+    logger.info("2FA successfully enabled for user:", { email: user.email });
+
+    const meta = getRequestMeta(req);
+    await logAuditEvent({
+      action: "two_factor_enabled",
+      userId: user._id,
+      ...meta,
+    });
 
     res.status(200).json({
       success: true,
@@ -151,7 +160,14 @@ exports.disable2FA = asyncHandler(async (req, res, next) => {
     user.recoveryCodes = undefined;
     await user.save({ validateBeforeSave: false });
 
-    console.log("2FA disabled for user:", user.email);
+    logger.info("2FA disabled for user:", { email: user.email });
+
+    const meta = getRequestMeta(req);
+    await logAuditEvent({
+      action: "two_factor_disabled",
+      userId: user._id,
+      ...meta,
+    });
 
     res.status(200).json({
       success: true,
