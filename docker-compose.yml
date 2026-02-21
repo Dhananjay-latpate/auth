@@ -3,7 +3,7 @@ version: "3.9"
 services:
   # MongoDB Database
   mongo:
-    image: mongo:6
+    image: mongo:6.0
     container_name: rauth-mongo
     restart: unless-stopped
     environment:

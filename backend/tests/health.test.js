@@ -61,7 +61,7 @@ describe("Health Check Endpoint", () => {
       status: healthy ? "ok" : "degraded",
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
-      version: "1.0.0",
+      version: process.env.npm_package_version || "1.0.0",
       database: healthy ? "connected" : "disconnected",
     };
 
@@ -69,6 +69,7 @@ describe("Health Check Endpoint", () => {
     expect(response.database).toBe("connected");
     expect(typeof response.uptime).toBe("number");
     expect(response.timestamp).toBeTruthy();
+    expect(typeof response.version).toBe("string");
   });
 
   test("health endpoint shows degraded when db is disconnected", () => {

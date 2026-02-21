@@ -52,7 +52,10 @@ router.get("/google", (req, res, next) => {
  */
 router.get(
   "/google/callback",
-  passport.authenticate("google", { session: false, failureRedirect: `${FRONTEND_URL}/login?error=oauth_failed` }),
+  passport.authenticate("google", {
+    session: false,
+    failureRedirect: `${FRONTEND_URL}/login?error=oauth_failed`,
+  }),
   async (req, res) => {
     try {
       const token = req.user.getSignedJwtToken();
@@ -104,7 +107,10 @@ router.get("/github", (req, res, next) => {
  */
 router.get(
   "/github/callback",
-  passport.authenticate("github", { session: false, failureRedirect: `${FRONTEND_URL}/login?error=oauth_failed` }),
+  passport.authenticate("github", {
+    session: false,
+    failureRedirect: `${FRONTEND_URL}/login?error=oauth_failed`,
+  }),
   async (req, res) => {
     try {
       const token = req.user.getSignedJwtToken();

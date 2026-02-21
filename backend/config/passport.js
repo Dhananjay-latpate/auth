@@ -48,8 +48,12 @@ const findOrCreateOAuthUser = async (
   // Create new user
   const newUser = await User.create({
     name: name || `${provider} User`,
-    email: email || `${provider}_${providerId}@oauth.local`,
-    // Set a random password since OAuth users won't use password login
+    // email: `${provider}_${providerId}@oauth.placeholder` to flag OAuth-only accounts without email.
+    // This domain is not real and will never receive actual emails.
+    email: email || `${provider}_${providerId}@oauth.placeholder`,
+    // Generate a random strong password for OAuth users who will not use password login.
+    // The concatenation of a 32-byte random hex and 'Aa1!' satisfies the password strength
+    // requirements (uppercase, lowercase, number, special char) without being guessable.
     password:
       require("crypto").randomBytes(32).toString("hex") + "Aa1!",
     role: "user",

@@ -23,6 +23,13 @@ const OAuthCallback = () => {
     }
 
     if (token) {
+      // Basic JWT format validation: three dot-separated base64 segments
+      const jwtPattern = /^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$/;
+      if (!jwtPattern.test(token)) {
+        setStatus("Invalid token received. Redirecting to login...");
+        setTimeout(() => router.replace("/login?error=invalid_token"), 2000);
+        return;
+      }
       storeAuthToken(token);
       setStatus("Login successful! Redirecting...");
       router.replace("/dashboard");
